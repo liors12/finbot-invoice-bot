@@ -169,10 +169,10 @@ sessions = {}
 def get_session(chat_id: int) -> dict:
     if chat_id not in sessions:
         sessions[chat_id] = {
-            "phase": "idle",
+            "phase": "idle",          # idle | collecting | reviewing | check_details | unknown_customer | issuing
             "transactions": [],
-            "screenshot_msg_id": None,
-            "screenshot_hash": None,
+            "screenshot_msg_ids": [],  # list of message IDs to delete later
+            "screenshot_hashes": [],   # list of hashes for dedup
             "pending_idx": None,
         }
     return sessions[chat_id]
@@ -236,6 +236,7 @@ def review_text(txns: list[dict]) -> str:
         "  `<#> לקוח <ID>` · `<#> חדש` · `<#> צק`\n"
         "  `מחק <#>` · `<#> כן` (אישור שאלה)\n"
         "✅ `אישור` — הפקה ושליחה\n"
+        "🔍 `בדיקה` — הצגת פרטים מלאים בלי לשלוח\n"
         "❌ /cancel — ביטול"
     )
     return "\n".join(lines)
@@ -428,11 +429,17 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     sess = get_session(chat_id)
-    if sess["phase"] != "idle":
-        await update.message.reply_text("⚠️ סשן פעיל. `אישור` או /cancel")
+
+    # Only accept photos in idle or collecting phase
+    if sess["phase"] not in ("idle", "collecting"):
+        await update.message.reply_text(
+            "⚠️ *יש עסקאות בבדיקה כרגע.*\n\n"
+            "כדי לאשר ולהפיק חשבוניות — שלח `אישור`\n"
+            "כדי לבטל ולהתחיל מחדש — שלח /cancel",
+            parse_mode="Markdown")
         return
 
-    sess["screenshot_msg_id"] = update.message.message_id
+    sess["screenshot_msg_ids"].append(update.message.message_id)
     status = await update.message.reply_text("⏳ מנתח צילום מסך...")
 
     try:
@@ -445,16 +452,16 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if db.is_screenshot_processed(ss_hash):
             await status.edit_text("⚠️ צילום מסך זה כבר עובד בעבר. שלח צילום חדש.")
             return
-        sess["screenshot_hash"] = ss_hash
+        sess["screenshot_hashes"].append(ss_hash)
 
         await status.edit_text("🔍 מזהה העברות...")
         raw = await parse_screenshot(img)
 
         if not raw:
-            await status.edit_text("😕 לא זוהו העברות. ודא שזה צילום של One Zero עם העברות.")
+            await status.edit_text("😕 לא זוהו העברות בצילום הזה.")
             return
 
-        txns = []
+        new_txns = []
         for r in raw:
             desc = r.get("description", "")
             amount = float(r.get("amount", 0))
@@ -484,14 +491,19 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "fingerprint": db.make_fingerprint(r.get("date", ""), abs(amount), clean),
             }
 
-            # ── Transaction-level dedup ──
+            # ── Transaction-level dedup (against DB) ──
             dup = db.is_txn_duplicate(txn["fingerprint"])
             if dup:
                 txn["match"] = "duplicate"
                 txn["customer_name"] = dup.get("customer_name", "")
                 txn["customer_id"] = dup.get("finbot_id")
-                txns.append(txn)
+                new_txns.append(txn)
                 continue
+
+            # ── Dedup against already-collected transactions in this session ──
+            existing_fps = [t["fingerprint"] for t in sess["transactions"]]
+            if txn["fingerprint"] in existing_fps:
+                continue  # skip silently, already in list
 
             # ── Special sources ──
             special = db.check_special(desc)
@@ -525,15 +537,24 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     if similar:
                         txn["match"] = "similar"
 
-            txns.append(txn)
+            new_txns.append(txn)
 
-        if not txns:
-            await status.edit_text("😕 לא נמצאו העברות נכנסות רלוונטיות.")
+        if not new_txns:
+            await status.edit_text("😕 לא נמצאו העברות חדשות בצילום הזה.")
             return
 
-        sess["transactions"] = txns
-        sess["phase"] = "reviewing"
-        await status.edit_text(review_text(txns), parse_mode="Markdown")
+        sess["transactions"].extend(new_txns)
+        sess["phase"] = "collecting"
+
+        total_txns = len(sess["transactions"])
+        total_screenshots = len(sess["screenshot_hashes"])
+        total_amount = sum(t["amount"] for t in sess["transactions"])
+
+        await status.edit_text(
+            f"✅ זוהו *{len(new_txns)}* העברות חדשות מצילום #{total_screenshots}\n\n"
+            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}\n\n"
+            f"📸 שלח צילום מסך נוסף, או שלח `סיכום` כדי לעבור לבדיקה ואישור.",
+            parse_mode="Markdown")
 
     except ValueError as e:
         await status.edit_text(f"❌ {e}")
@@ -596,6 +617,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if sess["phase"] != "reviewing":
+        # ── סיכום — move from collecting to reviewing ──
+        if sess["phase"] == "collecting" and text == "סיכום":
+            if not sess["transactions"]:
+                await update.message.reply_text("אין העברות. שלח צילום מסך קודם.")
+                return
+            sess["phase"] = "reviewing"
+            await update.message.reply_text(review_text(sess["transactions"]), parse_mode="Markdown")
+            return
         return
 
     txns = sess["transactions"]
@@ -612,6 +641,46 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ פריטים {nums} לא מוכנים. טפל בהם, מחק (`מחק <#>`), או אשר שאלות (`<#> כן`).")
             return
         await _do_issue(update, sess)
+        return
+
+    # ── בדיקה (dry-run) ──
+    if text == "בדיקה":
+        to_issue = [t for t in txns if t["match"] not in ("duplicate",)]
+        if not to_issue:
+            await update.message.reply_text("אין העברות להפקה.")
+            return
+
+        cfg = db.get_all_config()
+        lines = ["🔍 *מצב בדיקה — לא נשלח כלום!*\n"]
+        for i, txn in enumerate(to_issue):
+            pre_vat = round(txn["amount"] / VAT_RATE, 2)
+            cust = db.get_customer(txn["customer_id"]) if txn["customer_id"] else None
+            email_status = f"📧 {cust['email']}" if cust and cust.get("email") else "📭 *אין מייל — לא יישלח!*"
+            doc_label = DOC_LABELS.get(txn["doc_type"], txn["doc_type"])
+            pay_label = PAY_LABELS.get(txn["payment_type"], txn["payment_type"])
+
+            lines.append(f"*── עסקה {i+1} ──*")
+            lines.append(f"👤 לקוח: {txn.get('customer_name', '?')} (ID: {txn.get('customer_id', '?')})")
+            lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
+            lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
+            lines.append(f"📄 סוג מסמך: {doc_label}")
+            lines.append(f"💳 אמצעי תשלום: {pay_label}")
+            lines.append(f"📅 תאריך: {txn['date']}")
+            lines.append(f"{email_status}")
+
+            # Check allocation threshold
+            now = datetime.now(TZ)
+            threshold = ALLOCATION_THRESHOLD_JUN if now.month >= 6 and now.year >= 2026 else ALLOCATION_THRESHOLD
+            if pre_vat >= threshold:
+                lines.append(f"📋 *מספר הקצאה יידרש* (מעל {fmt(threshold)})")
+            lines.append("")
+
+        lines.append(f"*סה\"כ: {len(to_issue)} מסמכים*")
+        lines.append("")
+        lines.append("✅ אם הכל נראה תקין — שלח `אישור` להפקה אמיתית")
+        lines.append("❌ /cancel לביטול")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
     # ── מחק # ──
@@ -756,7 +825,7 @@ async def _do_issue(update: Update, sess: dict):
         # Record in DB regardless of success/failure
         db.record_transaction(
             fingerprint=txn["fingerprint"],
-            screenshot_hash=sess.get("screenshot_hash", ""),
+            screenshot_hash=",".join(sess.get("screenshot_hashes", [])),
             bank_date=txn["date"],
             amount=txn["amount"],
             amount_before_vat=pre_vat,
@@ -795,10 +864,10 @@ async def _do_issue(update: Update, sess: dict):
 
     await status.edit_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
 
-    # ── Delete screenshot ──
-    if sess.get("screenshot_msg_id"):
+    # ── Delete all screenshots ──
+    for msg_id in sess.get("screenshot_msg_ids", []):
         try:
-            await update.effective_chat.delete_message(sess["screenshot_msg_id"])
+            await update.effective_chat.delete_message(msg_id)
         except:
             pass
 
