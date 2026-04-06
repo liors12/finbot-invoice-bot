@@ -593,6 +593,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if sess["phase"] == "check_details":
         idx = sess["pending_idx"]
         txn = sess["transactions"][idx]
+
+        # Allow skipping
+        if text in ("דלג", "חזור", "ביטול"):
+            txn["match"] = "matched"
+            txn["check_details"] = None
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"✅ דילגת על פרטי צ'ק.\n\n" + review_text(sess["transactions"]),
+                parse_mode="Markdown")
+            return
+
         parts = re.split(r'[,\s]+', text)
         if len(parts) >= 4:
             txn["check_details"] = {
@@ -606,13 +618,27 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ פרטי צ'ק נשמרו.\n\n" + review_text(sess["transactions"]),
                 parse_mode="Markdown")
         else:
-            await update.message.reply_text("⚠️ פורמט: `בנק,סניף,חשבון,מספר_צק`", parse_mode="Markdown")
+            await update.message.reply_text(
+                "⚠️ פורמט: `בנק,סניף,חשבון,מספר_צק`\n"
+                "לדוגמה: `12,345,678901,1234`\n\n"
+                "לדלג על פרטי צ'ק? שלח `דלג`",
+                parse_mode="Markdown")
         return
 
     # ── Unknown customer — waiting for Finbot ID ──
     if sess["phase"] == "unknown_customer":
         idx = sess["pending_idx"]
         txn = sess["transactions"][idx]
+
+        # Allow going back
+        if text in ("דלג", "חזור", "ביטול"):
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"↩️ חזרה לבדיקה.\n\n" + review_text(sess["transactions"]),
+                parse_mode="Markdown")
+            return
+
         try:
             fid = int(text.strip())
             # Save alias + create customer if needed
@@ -631,7 +657,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ '{clean}' → {cust['name']} (ID {fid}) — נשמר!\n\n" +
                 review_text(sess["transactions"]), parse_mode="Markdown")
         except ValueError:
-            await update.message.reply_text("⚠️ שלח מספר סידורי בלבד.")
+            await update.message.reply_text("⚠️ שלח מספר סידורי בלבד, או `דלג` לחזרה.", parse_mode="Markdown")
         return
 
     if sess["phase"] != "reviewing":
@@ -729,7 +755,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 sess["pending_idx"] = idx
                 await update.message.reply_text(
                     f"📝 פרטי צ'ק עבור {txn['customer_name']}:\n"
-                    "`בנק,סניף,חשבון,מספר_צק`", parse_mode="Markdown")
+                    "`בנק,סניף,חשבון,מספר_צק`\n\n"
+                    "לא חובה — לדלג שלח `דלג`", parse_mode="Markdown")
                 return
             await update.message.reply_text(review_text(txns), parse_mode="Markdown")
         return
@@ -761,7 +788,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sess["phase"] = "check_details"
             sess["pending_idx"] = idx
             await update.message.reply_text(
-                f"📝 פרטי צ'ק:\n`בנק,סניף,חשבון,מספר_צק`", parse_mode="Markdown")
+                f"📝 פרטי צ'ק:\n`בנק,סניף,חשבון,מספר_צק`\n\n"
+                "לא חובה — לדלג שלח `דלג`", parse_mode="Markdown")
         return
 
     # ── # חדש ──
