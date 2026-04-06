@@ -223,22 +223,40 @@ def review_text(txns: list[dict]) -> str:
         status = " ".join(flags)
         lines.append(
             f"*{i+1}.* {t['bank_desc']}\n"
-            f"   💰 {fmt(t['amount'])}  📅 {t['date']}\n"
-            f"   {status}"
+            f"💰 {fmt(t['amount'])} 📅 {t['date']}\n"
+            f"{status}"
         )
         lines.append("")
 
-    lines.append(f"*סה\"כ: {fmt(total)}*  ({len(txns)} העברות)\n")
-    lines.append("─" * 30)
-    lines.append(
-        "✏️ *תיקון:*\n"
-        "  `<#> שם <שם>` · `<#> סכום <X>` · `<#> סוג קבלה/חמק/חמ`\n"
-        "  `<#> לקוח <ID>` · `<#> חדש` · `<#> צק`\n"
-        "  `מחק <#>` · `<#> כן` (אישור שאלה)\n"
-        "✅ `אישור` — הפקה ושליחה\n"
-        "🔍 `בדיקה` — הצגת פרטים מלאים בלי לשלוח\n"
-        "❌ /cancel — ביטול"
-    )
+    lines.append(f"*סה\"כ: {fmt(total)}* ({len(txns)} העברות)\n")
+    lines.append("━" * 18)
+    lines.append("")
+    lines.append("🗑 כבר הוצאתי חשבונית? למחיקת שורה שלח:")
+    lines.append("`מחק 2`")
+    lines.append("")
+    lines.append("🏦 תשלום בצ'ק? שלח:")
+    lines.append("`3 צק`")
+    lines.append("ואז הבוט יבקש: מספר בנק, סניף, חשבון, מספר צ'ק")
+    lines.append("")
+    lines.append("✏️ לשנות שם לקוח? שלח:")
+    lines.append("`3 שם דוד כהן`")
+    lines.append("")
+    lines.append("✏️ לתקן סכום? שלח:")
+    lines.append("`3 סכום 5000`")
+    lines.append("")
+    lines.append("✏️ לשנות סוג מסמך? שלח:")
+    lines.append("`3 סוג קבלה`")
+    lines.append("(אפשרויות: קבלה / חמק / חמ)")
+    lines.append("")
+    lines.append("✏️ לשייך ללקוח קיים? שלח:")
+    lines.append("`3 לקוח 105103`")
+    lines.append("")
+    lines.append("🆕 לקוח חדש שלא במערכת? שלח:")
+    lines.append("`3 חדש`")
+    lines.append("")
+    lines.append("🔍 `בדיקה` — הצגת כל הפרטים בלי לשלוח")
+    lines.append("✅ `אישור` — הפקה ושליחה ללקוחות")
+    lines.append("❌ /cancel — ביטול הכל")
     return "\n".join(lines)
 
 # ── Command handlers ────────────────────────────────────────────────────────
