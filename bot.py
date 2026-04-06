@@ -38,9 +38,19 @@ from database import Database
 # ── Config ──────────────────────────────────────────────────────────────────
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GEMINI_KEY     = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_KEYS    = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 OWNER_CHAT_ID  = int(os.environ.get("OWNER_CHAT_ID", "0"))
 DB_PATH        = Path(os.environ.get("DATA_DIR", "./data")) / "finbot.db"
+
+_gemini_key_index = 0
+def get_next_gemini_key() -> str:
+    """Rotate through available Gemini API keys."""
+    global _gemini_key_index
+    if not GEMINI_KEYS:
+        raise ValueError("No Gemini API keys configured")
+    key = GEMINI_KEYS[_gemini_key_index % len(GEMINI_KEYS)]
+    _gemini_key_index += 1
+    return key
 
 FINBOT_URL     = "https://api.finbotai.co.il/income"
 VAT_RATE       = 1.18
@@ -81,9 +91,6 @@ If not a bank screen: {"error":"not a bank statement"}"""
 async def parse_screenshot(img_bytes: bytes) -> list[dict]:
     import asyncio
 
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
     image_part = {
         "inline_data": {
             "mime_type": "image/jpeg",
@@ -91,18 +98,34 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
         }
     }
 
-    # Gemini SDK is synchronous — run in thread to avoid blocking
-    def _call():
-        response = model.generate_content(
-            [image_part, VISION_PROMPT],
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=4000,
-            ),
-        )
-        return response.text
+    # Try each key until one works (handles rate limits)
+    last_error = None
+    for attempt in range(len(GEMINI_KEYS)):
+        key = get_next_gemini_key()
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
-    txt = await asyncio.to_thread(_call)
+        def _call():
+            response = model.generate_content(
+                [image_part, VISION_PROMPT],
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=4000,
+                ),
+            )
+            return response.text
+
+        try:
+            txt = await asyncio.to_thread(_call)
+            break
+        except Exception as e:
+            last_error = e
+            if "429" in str(e) or "Resource" in str(e):
+                log.warning(f"Gemini key rate limited, trying next key...")
+                continue
+            raise
+    else:
+        raise ValueError(f"All {len(GEMINI_KEYS)} Gemini keys are rate limited. Try again later.")
     txt = txt.strip()
     txt = re.sub(r'^```\w*\n?', '', txt)
     txt = re.sub(r'\n?```$', '', txt)
@@ -835,7 +858,7 @@ def main():
             name="daily_reminder")
         log.info(f"Reminder at {REMINDER_HOUR}:00 for chat {OWNER_CHAT_ID}")
 
-    log.info("Bot v2 starting...")
+    log.info(f"Bot v2 starting... ({len(GEMINI_KEYS)} Gemini key(s) configured)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
