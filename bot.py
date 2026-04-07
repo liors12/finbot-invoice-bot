@@ -55,6 +55,22 @@ def get_next_gemini_key() -> str:
 FINBOT_URL     = "https://api.finbotai.co.il/income"
 VAT_RATE       = 1.18
 
+# ── Access Control ──────────────────────────────────────────────────────────
+
+def owner_only(func):
+    """Decorator: reject all interactions from non-owner users."""
+    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if OWNER_CHAT_ID and user and user.id != OWNER_CHAT_ID:
+            log.warning(f"Unauthorized access attempt from user {user.id}")
+            if update.message:
+                await update.message.reply_text("⛔ גישה מוגבלת — בוט פרטי.")
+            elif update.callback_query:
+                await update.callback_query.answer("⛔ גישה מוגבלת", show_alert=True)
+            return
+        return await func(update, ctx)
+    return wrapper
+
 # מספר הקצאה thresholds (amount BEFORE VAT)
 # Jan 2026: 10,000₪  |  Jun 2026: 5,000₪
 ALLOCATION_THRESHOLD = 10_000
@@ -261,6 +277,7 @@ def review_text(txns: list[dict]) -> str:
 
 # ── Command handlers ────────────────────────────────────────────────────────
 
+@owner_only
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     uid = update.effective_user.id
@@ -274,6 +291,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 Chat ID: `{cid}`\n👤 User ID: `{uid}`",
         parse_mode="MarkdownV2")
 
+@owner_only
 async def cmd_token(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/token YOUR_FINBOT_TOKEN`", parse_mode="Markdown")
@@ -285,6 +303,7 @@ async def cmd_token(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     await update.effective_chat.send_message("✅ טוקן נשמר! (ההודעה נמחקה)\n\nשלח צילום מסך של העברות.")
 
+@owner_only
 async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = db.get_all_config()
     tok = "✅" if cfg.get("finbot_token") else "❌"
@@ -302,6 +321,7 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📋 סף מספר הקצאה: {fmt(ALLOCATION_THRESHOLD)} לפני מע\"מ",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
+@owner_only
 async def cmd_customers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     custs = db.list_customers()
     if not custs:
@@ -314,6 +334,7 @@ async def cmd_customers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{icon}{email_icon} {c['name']} (ID: {c['finbot_id']})")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+@owner_only
 async def cmd_active(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     active = [c for c in db.list_customers() if c["active"]]
     inactive = [c for c in db.list_customers() if not c["active"]]
@@ -328,6 +349,7 @@ async def cmd_active(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n`/activate <id>` · `/deactivate <id>`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+@owner_only
 async def cmd_activate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/activate <מספר_סידורי>`", parse_mode="Markdown")
@@ -340,6 +362,7 @@ async def cmd_activate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db.set_active(fid, True)
     await update.message.reply_text(f"✅ {cust['name']} — *פעיל*", parse_mode="Markdown")
 
+@owner_only
 async def cmd_deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/deactivate <מספר_סידורי>`", parse_mode="Markdown")
@@ -352,6 +375,7 @@ async def cmd_deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db.set_active(fid, False)
     await update.message.reply_text(f"🔕 {cust['name']} — *לא פעיל*", parse_mode="Markdown")
 
+@owner_only
 async def cmd_alias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 2:
         await update.message.reply_text("שימוש: `/alias שם_בבנק מספר_סידורי`", parse_mode="Markdown")
@@ -365,6 +389,7 @@ async def cmd_alias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db.add_alias(alias, fid)
     await update.message.reply_text(f"✅ '{alias}' → {cust['name']} (ID {fid})")
 
+@owner_only
 async def cmd_unpaid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(TZ)
     month_key = ctx.args[0] if ctx.args else now.strftime("%Y-%m")
@@ -382,12 +407,64 @@ async def cmd_unpaid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  • {p.get('cust_name', '?')} — {fmt(p['amount'])}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+@owner_only
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_session(update.effective_chat.id)
     await update.message.reply_text("❌ בוטל.")
 
+@owner_only
+async def cmd_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set customer to receipt-only mode (already has חשבונית מס)."""
+    if not ctx.args:
+        # Show all receipt-only customers
+        custs = db.list_customers()
+        receipt_only = [c for c in custs if c["doc_type"] == "1"]
+        invoice_receipt = [c for c in custs if c["doc_type"] == "2"]
+        lines = ["📄 *מצב מסמכים לפי לקוח:*\n"]
+        if receipt_only:
+            lines.append("🧾 *קבלה בלבד* (כבר יש חשבונית מס):")
+            for c in receipt_only:
+                lines.append(f"  • {c['name']} (ID: {c['finbot_id']})")
+            lines.append("")
+        if invoice_receipt:
+            lines.append("📋 *חשבונית מס קבלה* (ברירת מחדל):")
+            for c in invoice_receipt:
+                lines.append(f"  • {c['name']} (ID: {c['finbot_id']})")
+        lines.append("")
+        lines.append("לשנות לקבלה בלבד: `/receipt <ID>`")
+        lines.append("להחזיר לחשבונית מס קבלה: `/invoice <ID>`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+    fid = int(ctx.args[0])
+    cust = db.get_customer(fid)
+    if not cust:
+        await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
+        return
+    db.set_doc_type(fid, "1")
+    await update.message.reply_text(
+        f"🧾 {cust['name']} — *קבלה בלבד*\n"
+        f"(כי כבר הוצאת חשבונית מס בנפרד)",
+        parse_mode="Markdown")
+
+@owner_only
+async def cmd_invoice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Set customer back to invoice+receipt mode."""
+    if not ctx.args:
+        await update.message.reply_text("שימוש: `/invoice <ID>`", parse_mode="Markdown")
+        return
+    fid = int(ctx.args[0])
+    cust = db.get_customer(fid)
+    if not cust:
+        await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
+        return
+    db.set_doc_type(fid, "2")
+    await update.message.reply_text(
+        f"📋 {cust['name']} — *חשבונית מס קבלה*",
+        parse_mode="Markdown")
+
 # ── Callback handler ────────────────────────────────────────────────────────
 
+@owner_only
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     cfg = db.get_all_config()
@@ -421,6 +498,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Document (Excel) handler ────────────────────────────────────────────────
 
+@owner_only
 async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc.file_name.endswith(('.xlsx', '.xls')):
@@ -438,6 +516,7 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Photo handler — bank screenshot ────────────────────────────────────────
 
+@owner_only
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = db.get_all_config()
     chat_id = update.effective_chat.id
@@ -584,6 +663,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Text handler — corrections & approval ───────────────────────────────────
 
+@owner_only
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     sess = get_session(chat_id)
@@ -961,6 +1041,8 @@ def main():
     app.add_handler(CommandHandler("alias", cmd_alias))
     app.add_handler(CommandHandler("unpaid", cmd_unpaid))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("receipt", cmd_receipt))
+    app.add_handler(CommandHandler("invoice", cmd_invoice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
