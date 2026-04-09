@@ -588,7 +588,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb = [[
                 InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
             ], [
-                InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
+                InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
                 InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
             ]]
             await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
@@ -619,7 +619,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if unresolved:
                 nums = ", ".join(str(i + 1) for i in unresolved)
                 kb = [[
-                    InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
+                    InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
                     InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
                 ]]
                 await q.edit_message_text(
@@ -1080,7 +1080,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = [[
             InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
         ], [
-            InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
+            InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
         ]]
 
