@@ -608,6 +608,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "action_approve":
         await q.answer()
         sess = get_session(chat_id)
+        log.info(f"action_approve: phase={sess['phase']}, txns={len(sess.get('transactions', []))}")
         await cleanup_old_status_msgs(update.effective_chat, sess, keep_msg_id=q.message.message_id)
         if sess["phase"] in ("reviewing", "collecting"):
             if sess["phase"] == "collecting":
@@ -622,14 +623,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
                     InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
                 ]]
-                await q.edit_message_text(
-                    f"⚠️ פריטים {nums} לא מוכנים.\n\n"
-                    f"טפל בהם, מחק (`מחק <#>`), או אשר שאלות (`<#> כן`).",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(kb))
+                try:
+                    await q.edit_message_text(
+                        f"⚠️ פריטים {nums} לא מוכנים.\n\n"
+                        f"טפל בהם, מחק (מחק #), או אשר שאלות (# כן).",
+                        reply_markup=InlineKeyboardMarkup(kb))
+                except Exception as e:
+                    log.error(f"Failed to edit message: {e}")
+                    await update.effective_chat.send_message(
+                        f"⚠️ פריטים {nums} לא מוכנים. טפל בהם או מחק אותם.")
                 return
-            # Create a fake Update-like object for _do_issue
-            await _do_issue(update, sess)
+            try:
+                await _do_issue(update, sess)
+            except Exception as e:
+                log.exception(f"_do_issue failed: {e}")
+                await update.effective_chat.send_message(f"❌ שגיאה בהפקה: {e}")
+                clear_session(chat_id)
+        else:
+            log.warning(f"action_approve: unexpected phase '{sess['phase']}'")
+            await update.effective_chat.send_message("⚠️ אין עסקאות פעילות. שלח צילום מסך חדש.")
         return
 
     if action == "action_cancel":
