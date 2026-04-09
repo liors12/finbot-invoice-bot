@@ -222,7 +222,7 @@ def esc(text: str) -> str:
 def review_text(txns: list[dict]) -> str:
     if not txns:
         return "לא נמצאו העברות."
-    lines = ["📋 *העברות שזוהו:*\n"]
+    lines = ["📋 *כל ההעברות שזוהו מכל הצילומים:*\n"]
     total = 0
     for i, t in enumerate(txns):
         total += t["amount"]
@@ -270,14 +270,24 @@ def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
     del_btns = [InlineKeyboardButton(f"🗑{i+1}", callback_data=f"del_{i}") for i in range(len(txns))]
     for j in range(0, len(del_btns), 5):
         rows.append(del_btns[j:j+5])
-    # Per-transaction doc type buttons — rows of 5
-    type_btns = [InlineKeyboardButton(f"📄{i+1}", callback_data=f"dtype_{i}") for i in range(len(txns))]
-    for j in range(0, len(type_btns), 5):
-        rows.append(type_btns[j:j+5])
+    # Per-transaction doc type buttons — show current type, rows of 4
+    SHORT_DOC = {"0": "חמ", "1": "קבלה", "2": "חמק"}
+    type_btns = [InlineKeyboardButton(
+        f"📄{i+1}:{SHORT_DOC.get(txns[i].get('doc_type','2'),'חמק')}",
+        callback_data=f"dtype_{i}") for i in range(len(txns))]
+    for j in range(0, len(type_btns), 4):
+        rows.append(type_btns[j:j+4])
+    # 🆕 buttons for unknown/unresolved customers only
+    new_btns = [InlineKeyboardButton(f"🆕{i+1}", callback_data=f"newcust_{i}")
+                for i in range(len(txns))
+                if txns[i].get("match") in ("unknown", "special_ask", "similar")]
+    if new_btns:
+        for j in range(0, len(new_btns), 5):
+            rows.append(new_btns[j:j+5])
     # Main actions
     rows.append([
         InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
-        InlineKeyboardButton("✅ אישור", callback_data="action_approve"),
+        InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
     ])
     rows.append([
         InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
@@ -558,7 +568,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 lines.append("")
             lines.append(f"*סה\"כ: {len(txns)} מסמכים*")
             kb = [[
-                InlineKeyboardButton("✅ אישור — הפקה ושליחה", callback_data="action_approve"),
+                InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
             ], [
                 InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
                 InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
@@ -669,6 +679,26 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=review_keyboard(txns))
         return
 
+    # ── Per-transaction: assign new customer ──
+    if action.startswith("newcust_"):
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            txn = txns[idx]
+            sess["phase"] = "unknown_customer"
+            sess["pending_idx"] = idx
+            await q.edit_message_text(
+                f"🆕 *שיוך לקוח לשורה {idx+1}:*\n"
+                f"{esc(txn['bank_desc'])} — {fmt(txn['amount'])}\n\n"
+                f"שלח מספר סידורי של הלקוח מפינבוט.\n"
+                f"לחזרה שלח `דלג`",
+                parse_mode="Markdown")
+        else:
+            await q.answer("⚠️ שורה לא קיימת", show_alert=True)
+        return
+
     # ── Settings toggle buttons ──
     cfg = db.get_all_config()
     if action == "tog_currency":
@@ -736,7 +766,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if sess["phase"] not in ("idle", "collecting"):
         kb = [[
             InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
-            InlineKeyboardButton("✅ אישור", callback_data="action_approve"),
+            InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
         ], [
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
         ]]
@@ -1027,7 +1057,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"*סה\"כ: {len(to_issue)} מסמכים*")
 
         kb = [[
-            InlineKeyboardButton("✅ אישור — הפקה ושליחה", callback_data="action_approve"),
+            InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
         ], [
             InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
