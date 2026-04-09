@@ -180,7 +180,7 @@ class Database:
 
     def get_all_config(self) -> dict:
         defaults = {
-            "finbot_token": "", "currency": "ILS", "language": "he",
+            "finbot_token": "", "currency": "ILS", "language": "HE",
             "vat_type": "true", "rounding": "true",
         }
         with self._conn() as conn:
