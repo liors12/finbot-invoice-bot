@@ -20,7 +20,7 @@ Commands:
   /unpaid [YYYY-MM], /cancel
 """
 
-import os, json, re, base64, logging, hashlib
+import os, json, re, base64, logging, hashlib, functools
 from pathlib import Path
 from datetime import datetime, time as dtime
 from typing import Optional
@@ -41,6 +41,7 @@ from database import Database
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GEMINI_KEYS    = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 OWNER_CHAT_ID  = int(os.environ.get("OWNER_CHAT_ID", "0"))
+FINBOT_TOKEN_ENV = os.environ.get("FINBOT_TOKEN", "")  # fallback from .env
 DB_PATH        = Path(os.environ.get("DATA_DIR", "./data")) / "finbot.db"
 
 _gemini_key_index = 0
@@ -56,10 +57,17 @@ def get_next_gemini_key() -> str:
 FINBOT_URL     = "https://api.finbotai.co.il/income"
 VAT_RATE       = 1.18
 
+def get_finbot_token() -> str:
+    """Get Finbot token from .env (primary) or DB config (fallback)."""
+    if FINBOT_TOKEN_ENV:
+        return FINBOT_TOKEN_ENV
+    return db.get_config("finbot_token", "")
+
 # ── Access Control ──────────────────────────────────────────────────────────
 
 def owner_only(func):
     """Decorator: reject all interactions from non-owner users."""
+    @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if OWNER_CHAT_ID and user and user.id != OWNER_CHAT_ID:
@@ -205,6 +213,12 @@ PAY_LABELS = {"0": "מזומן", "1": "העברה", "2": "אשראי", "3": "צ'
 def fmt(amount: float) -> str:
     return f"₪{amount:,.2f}"
 
+def esc(text: str) -> str:
+    """Escape Markdown special chars in user-generated text."""
+    for ch in ('*', '_', '`', '['):
+        text = text.replace(ch, '')
+    return text
+
 def review_text(txns: list[dict]) -> str:
     if not txns:
         return "לא נמצאו העברות."
@@ -215,66 +229,62 @@ def review_text(txns: list[dict]) -> str:
         flags = []
 
         if t.get("match") == "matched":
-            flags.append(f"✅ {t['customer_name']}")
+            flags.append(f"✅ {esc(t['customer_name'])}")
         elif t.get("match") == "special_check":
             flags.append("⚠️ צ'ק — צריך פרטים")
         elif t.get("match") == "special_ask":
-            flags.append(f"❓ {t.get('special_msg', '')}")
+            flags.append(f"❓ {esc(t.get('special_msg', ''))}")
         elif t.get("match") == "unknown":
             flags.append("🆕 לקוח לא מוכר")
         elif t.get("match") == "duplicate":
-            flags.append("🔁 *כפילות — כבר הופקה חשבונית*")
+            flags.append("🔁 *כפילות*")
         elif t.get("match") == "similar":
-            flags.append("⚠️ *עסקה דומה קיימת החודש*")
+            flags.append("⚠️ *עסקה דומה קיימת*")
 
         if t.get("confidence", 100) < 85:
-            flags.append(f"🔍 וודאות: {t.get('confidence', '?')}%")
+            flags.append(f"🔍 {t.get('confidence', '?')}%")
 
-        # Check allocation threshold
         pre_vat = t["amount"] / VAT_RATE
         now = datetime.now(TZ)
         threshold = ALLOCATION_THRESHOLD_JUN if now.month >= 6 and now.year >= 2026 else ALLOCATION_THRESHOLD
         if pre_vat >= threshold:
-            flags.append(f"📋 מספר הקצאה נדרש (לפני מע\"מ: {fmt(pre_vat)})")
+            flags.append("📋 הקצאה")
 
+        doc_label = DOC_LABELS.get(t.get("doc_type", "2"), "")
         status = " ".join(flags)
         lines.append(
-            f"*{i+1}.* {t['bank_desc']}\n"
-            f"💰 {fmt(t['amount'])} 📅 {t['date']}\n"
+            f"*{i+1}.* {esc(t['bank_desc'])}\n"
+            f"💰 {fmt(t['amount'])} 📅 {t['date']} 📄 {doc_label}\n"
             f"{status}"
         )
         lines.append("")
 
-    lines.append(f"*סה\"כ: {fmt(total)}* ({len(txns)} העברות)\n")
-    lines.append("━" * 18)
-    lines.append("")
-    lines.append("🗑 כבר הוצאתי חשבונית? למחיקת שורה שלח:")
-    lines.append("`מחק 2`")
-    lines.append("")
-    lines.append("🏦 תשלום בצ'ק? שלח:")
-    lines.append("`3 צק`")
-    lines.append("ואז הבוט יבקש: מספר בנק, סניף, חשבון, מספר צ'ק")
-    lines.append("")
-    lines.append("✏️ לשנות שם לקוח? שלח:")
-    lines.append("`3 שם דוד כהן`")
-    lines.append("")
-    lines.append("✏️ לתקן סכום? שלח:")
-    lines.append("`3 סכום 5000`")
-    lines.append("")
-    lines.append("✏️ לשנות סוג מסמך? שלח:")
-    lines.append("`3 סוג קבלה`")
-    lines.append("(אפשרויות: קבלה / חמק / חמ)")
-    lines.append("")
-    lines.append("✏️ לשייך ללקוח קיים? שלח:")
-    lines.append("`3 לקוח 105103`")
-    lines.append("")
-    lines.append("🆕 לקוח חדש שלא במערכת? שלח:")
-    lines.append("`3 חדש`")
-    lines.append("")
-    lines.append("🔍 `בדיקה` — הצגת כל הפרטים בלי לשלוח")
-    lines.append("✅ `אישור` — הפקה ושליחה ללקוחות")
-    lines.append("❌ /cancel — ביטול הכל")
+    lines.append(f"*סה\"כ: {fmt(total)}* ({len(txns)} העברות)")
     return "\n".join(lines)
+
+
+def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
+    """Build inline keyboard for the review flow."""
+    rows = []
+    # Per-transaction buttons: one row per transaction with delete + doc type
+    if len(txns) <= 8:
+        for i in range(len(txns)):
+            short_name = txns[i].get("customer_name", txns[i].get("bank_desc", ""))[:12]
+            rows.append([
+                InlineKeyboardButton(f"🗑 {i+1}", callback_data=f"del_{i}"),
+                InlineKeyboardButton(f"📄 {i+1} סוג", callback_data=f"dtype_{i}"),
+            ])
+    else:
+        rows.append([InlineKeyboardButton("🗑/📄 שלח טקסט: מחק # / # סוג קבלה", callback_data="action_noop")])
+    # Main actions
+    rows.append([
+        InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+        InlineKeyboardButton("✅ אישור", callback_data="action_approve"),
+    ])
+    rows.append([
+        InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+    ])
+    return InlineKeyboardMarkup(rows)
 
 # ── Command handlers ────────────────────────────────────────────────────────
 
@@ -307,7 +317,7 @@ async def cmd_token(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @owner_only
 async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = db.get_all_config()
-    tok = "✅" if cfg.get("finbot_token") else "❌"
+    tok = "✅" if get_finbot_token() else "❌"
     vat = "כולל" if cfg.get("vat_type", "true") == "true" else "לא כולל"
     kb = [[
         InlineKeyboardButton(f"מטבע: {cfg.get('currency','ILS')}", callback_data="tog_currency"),
@@ -355,7 +365,11 @@ async def cmd_activate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/activate <מספר_סידורי>`", parse_mode="Markdown")
         return
-    fid = int(ctx.args[0])
+    try:
+        fid = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ שלח מספר סידורי בלבד.")
+        return
     cust = db.get_customer(fid)
     if not cust:
         await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
@@ -368,7 +382,11 @@ async def cmd_deactivate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/deactivate <מספר_סידורי>`", parse_mode="Markdown")
         return
-    fid = int(ctx.args[0])
+    try:
+        fid = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ שלח מספר סידורי בלבד.")
+        return
     cust = db.get_customer(fid)
     if not cust:
         await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
@@ -381,7 +399,11 @@ async def cmd_alias(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.args) < 2:
         await update.message.reply_text("שימוש: `/alias שם_בבנק מספר_סידורי`", parse_mode="Markdown")
         return
-    fid = int(ctx.args[-1])
+    try:
+        fid = int(ctx.args[-1])
+    except ValueError:
+        await update.message.reply_text("⚠️ המספר הסידורי חייב להיות מספר.")
+        return
     alias = " ".join(ctx.args[:-1])
     cust = db.get_customer(fid)
     if not cust:
@@ -407,6 +429,30 @@ async def cmd_unpaid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for p in paid:
             lines.append(f"  • {p.get('cust_name', '?')} — {fmt(p['amount'])}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+@owner_only
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📖 *פקודות:*\n\n"
+        "📸 שלח צילום מסך — זיהוי העברות\n"
+        "`/cancel` — ביטול תהליך\n"
+        "`/receipt` — הצגת סוגי מסמכים\n"
+        "`/receipt <ID>` — קבלה בלבד\n"
+        "`/invoice <ID>` — חשבונית מס קבלה\n"
+        "`/customers` — רשימת לקוחות\n"
+        "`/active` — לקוחות פעילים\n"
+        "`/unpaid` — מי לא שילם\n"
+        "`/settings` — הגדרות\n"
+        "`/token <TOKEN>` — עדכון טוקן פינבוט\n"
+        "`/alias <שם> <ID>` — שיוך שם בנקאי\n\n"
+        "*בזמן עריכת עסקאות (טקסט):*\n"
+        "`מחק 2` — מחיקת שורה\n"
+        "`3 לקוח 105103` — שיוך ללקוח\n"
+        "`3 סכום 5000` — תיקון סכום\n"
+        "`3 סוג קבלה` — שינוי סוג מסמך\n"
+        "`3 צק` — תשלום בצ'ק\n"
+        "`3 חדש` — לקוח חדש",
+        parse_mode="Markdown")
 
 @owner_only
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -436,7 +482,11 @@ async def cmd_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append("להחזיר לחשבונית מס קבלה: `/invoice <ID>`")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
-    fid = int(ctx.args[0])
+    try:
+        fid = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ שלח מספר סידורי בלבד.")
+        return
     cust = db.get_customer(fid)
     if not cust:
         await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
@@ -453,7 +503,11 @@ async def cmd_invoice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("שימוש: `/invoice <ID>`", parse_mode="Markdown")
         return
-    fid = int(ctx.args[0])
+    try:
+        fid = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ שלח מספר סידורי בלבד.")
+        return
     cust = db.get_customer(fid)
     if not cust:
         await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
@@ -508,6 +562,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb = [[
                 InlineKeyboardButton("✅ אישור — הפקה ושליחה", callback_data="action_approve"),
             ], [
+                InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
                 InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
             ]]
             await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
@@ -517,9 +572,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "action_summary":
         await q.answer()
         sess = get_session(chat_id)
-        if sess["phase"] == "collecting" and sess["transactions"]:
+        if sess["phase"] in ("collecting", "reviewing") and sess["transactions"]:
             sess["phase"] = "reviewing"
-            await q.edit_message_text(review_text(sess["transactions"]), parse_mode="Markdown")
+            await q.edit_message_text(review_text(sess["transactions"]), parse_mode="Markdown",
+                                      reply_markup=review_keyboard(sess["transactions"]))
         return
 
     if action == "action_approve":
@@ -534,10 +590,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                           if t["match"] in ("unknown", "special_check", "special_ask", "similar")]
             if unresolved:
                 nums = ", ".join(str(i + 1) for i in unresolved)
+                kb = [[
+                    InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
+                    InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+                ]]
                 await q.edit_message_text(
                     f"⚠️ פריטים {nums} לא מוכנים.\n\n"
                     f"טפל בהם, מחק (`מחק <#>`), או אשר שאלות (`<#> כן`).",
-                    parse_mode="Markdown")
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(kb))
                 return
             # Create a fake Update-like object for _do_issue
             await _do_issue(update, sess)
@@ -550,7 +611,64 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "action_noop":
-        await q.answer("📸 שלח צילום מסך נוסף")
+        await q.answer("💡 השתמש בפקודות טקסט לעריכה", show_alert=False)
+        return
+
+    # ── Per-transaction delete buttons ──
+    if action.startswith("del_"):
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            removed = txns.pop(idx)
+            if not txns:
+                clear_session(chat_id)
+                await q.edit_message_text("🗑 הכל נמחק. שלח צילום חדש.")
+            else:
+                await q.edit_message_text(
+                    review_text(txns), parse_mode="Markdown",
+                    reply_markup=review_keyboard(txns))
+        else:
+            await q.answer("⚠️ שורה לא קיימת", show_alert=True)
+        return
+
+    # ── Per-transaction doc type: show options ──
+    if action.startswith("dtype_") and "_" not in action[6:]:
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            kb = [[
+                InlineKeyboardButton("🧾 קבלה", callback_data=f"settype_{idx}_1"),
+                InlineKeyboardButton("📋 חמק", callback_data=f"settype_{idx}_2"),
+                InlineKeyboardButton("📄 חמ", callback_data=f"settype_{idx}_0"),
+            ], [
+                InlineKeyboardButton("↩️ חזור", callback_data="action_summary"),
+            ]]
+            t = txns[idx]
+            await q.edit_message_text(
+                f"📄 *שינוי סוג מסמך לשורה {idx+1}:*\n"
+                f"{t['bank_desc']} — {fmt(t['amount'])}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    # ── Per-transaction doc type: set ──
+    if action.startswith("settype_"):
+        await q.answer()
+        parts = action.split("_")
+        idx = int(parts[1])
+        doc_type = parts[2]
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            txns[idx]["doc_type"] = doc_type
+            sess["phase"] = "reviewing"
+            await q.edit_message_text(
+                review_text(txns), parse_mode="Markdown",
+                reply_markup=review_keyboard(txns))
         return
 
     # ── Settings toggle buttons ──
@@ -572,7 +690,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Refresh settings display
     cfg = db.get_all_config()
     vat = "כולל" if cfg.get("vat_type") == "true" else "לא כולל"
-    tok = "✅" if cfg.get("finbot_token") else "❌"
+    tok = "✅" if get_finbot_token() else "❌"
     kb = [[
         InlineKeyboardButton(f"מטבע: {cfg['currency']}", callback_data="tog_currency"),
         InlineKeyboardButton(f"מע\"מ: {vat}", callback_data="tog_vat"),
@@ -610,7 +728,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = db.get_all_config()
     chat_id = update.effective_chat.id
 
-    if not cfg.get("finbot_token"):
+    if not get_finbot_token():
         await update.message.reply_text("⚠️ `/token YOUR_TOKEN` קודם", parse_mode="Markdown")
         return
 
@@ -742,14 +860,15 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_amount = sum(t["amount"] for t in sess["transactions"])
 
         kb = [[
-            InlineKeyboardButton("📸 הוסף צילום נוסף", callback_data="action_noop"),
-        ], [
             InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
             InlineKeyboardButton("✅ סיכום ואישור", callback_data="action_summary"),
+        ], [
+            InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
         ]]
         await status.edit_text(
             f"✅ זוהו *{len(new_txns)}* העברות חדשות מצילום #{total_screenshots}\n\n"
-            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}",
+            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}\n\n"
+            f"📸 שלח צילום נוסף או לחץ למטה:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(kb))
 
@@ -782,21 +901,29 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sess["pending_idx"] = None
             await update.message.reply_text(
                 f"✅ דילגת על פרטי צ'ק.\n\n" + review_text(sess["transactions"]),
-                parse_mode="Markdown")
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
             return
 
         parts = re.split(r'[,\s]+', text)
         if len(parts) >= 4:
-            txn["check_details"] = {
-                "bankName": int(parts[0]), "bankBranch": int(parts[1]),
-                "bankAccount": int(parts[2]), "checkNumber": int(parts[3]),
-            }
+            try:
+                txn["check_details"] = {
+                    "bankName": int(parts[0]), "bankBranch": int(parts[1]),
+                    "bankAccount": int(parts[2]), "checkNumber": int(parts[3]),
+                }
+            except ValueError:
+                await update.message.reply_text(
+                    "⚠️ כל הערכים חייבים להיות מספרים.\n"
+                    "פורמט: `בנק,סניף,חשבון,מספר_צק`\n\n"
+                    "לדלג? שלח `דלג`",
+                    parse_mode="Markdown")
+                return
             txn["match"] = "matched"
             sess["phase"] = "reviewing"
             sess["pending_idx"] = None
             await update.message.reply_text(
                 f"✅ פרטי צ'ק נשמרו.\n\n" + review_text(sess["transactions"]),
-                parse_mode="Markdown")
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
         else:
             await update.message.reply_text(
                 "⚠️ פורמט: `בנק,סניף,חשבון,מספר_צק`\n"
@@ -816,7 +943,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sess["pending_idx"] = None
             await update.message.reply_text(
                 f"↩️ חזרה לבדיקה.\n\n" + review_text(sess["transactions"]),
-                parse_mode="Markdown")
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
             return
 
         try:
@@ -835,7 +962,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sess["pending_idx"] = None
             await update.message.reply_text(
                 f"✅ '{clean}' → {cust['name']} (ID {fid}) — נשמר!\n\n" +
-                review_text(sess["transactions"]), parse_mode="Markdown")
+                review_text(sess["transactions"]), parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
         except ValueError:
             await update.message.reply_text("⚠️ שלח מספר סידורי בלבד, או `דלג` לחזרה.", parse_mode="Markdown")
         return
@@ -847,7 +974,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("אין העברות. שלח צילום מסך קודם.")
                 return
             sess["phase"] = "reviewing"
-            await update.message.reply_text(review_text(sess["transactions"]), parse_mode="Markdown")
+            await update.message.reply_text(review_text(sess["transactions"]), parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
             return
         return
 
@@ -900,11 +1027,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append("")
 
         lines.append(f"*סה\"כ: {len(to_issue)} מסמכים*")
-        lines.append("")
-        lines.append("✅ אם הכל נראה תקין — שלח `אישור` להפקה אמיתית")
-        lines.append("❌ /cancel לביטול")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        kb = [[
+            InlineKeyboardButton("✅ אישור — הפקה ושליחה", callback_data="action_approve"),
+        ], [
+            InlineKeyboardButton("↩️ חזור לעריכה", callback_data="action_summary"),
+            InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+        ]]
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                        reply_markup=InlineKeyboardMarkup(kb))
         return
 
     # ── מחק # ──
@@ -918,7 +1050,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 clear_session(chat_id)
                 await update.message.reply_text("🗑 הכל נמחק. שלח צילום חדש.")
                 return
-            await update.message.reply_text(f"🗑 נמחק.\n\n" + review_text(txns), parse_mode="Markdown")
+            await update.message.reply_text(f"🗑 נמחק.\n\n" + review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
     # ── # כן (confirm special/similar) ──
@@ -938,7 +1070,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "`בנק,סניף,חשבון,מספר_צק`\n\n"
                     "לא חובה — לדלג שלח `דלג`", parse_mode="Markdown")
                 return
-            await update.message.reply_text(review_text(txns), parse_mode="Markdown")
+            await update.message.reply_text(review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
     # ── # לקוח <id> ──
@@ -955,7 +1087,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 txn["match"] = "matched"
                 db.add_alias(txn["clean_name"], fid, "auto")
                 await update.message.reply_text(
-                    f"✅ נשמר!\n\n" + review_text(txns), parse_mode="Markdown")
+                    f"✅ נשמר!\n\n" + review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
             else:
                 await update.message.reply_text(f"⚠️ לקוח {fid} לא נמצא.")
         return
@@ -990,7 +1122,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         idx = int(m.group(1)) - 1
         if 0 <= idx < len(txns):
             txns[idx]["customer_name"] = m.group(2).strip()
-            await update.message.reply_text(review_text(txns), parse_mode="Markdown")
+            await update.message.reply_text(review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
     # ── # סכום <amount> ──
@@ -1002,7 +1134,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Recalculate fingerprint
             txns[idx]["fingerprint"] = db.make_fingerprint(
                 txns[idx]["date"], txns[idx]["amount"], txns[idx]["clean_name"])
-            await update.message.reply_text(review_text(txns), parse_mode="Markdown")
+            await update.message.reply_text(review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
     # ── # סוג <type> ──
@@ -1013,7 +1145,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         type_map = {"חמק": "2", "קבלה": "1", "חמ": "0"}
         if dtype in type_map and 0 <= idx < len(txns):
             txns[idx]["doc_type"] = type_map[dtype]
-            await update.message.reply_text(review_text(txns), parse_mode="Markdown")
+            await update.message.reply_text(review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
 # ── Issue documents ─────────────────────────────────────────────────────────
@@ -1021,15 +1153,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def _do_issue(update: Update, sess: dict):
     cfg = db.get_all_config()
     txns = [t for t in sess["transactions"] if t["match"] not in ("duplicate",)]
-    chat_id = update.effective_chat.id
+    chat = update.effective_chat
+    chat_id = chat.id
 
     if not txns:
-        await update.message.reply_text("אין העברות להפקה (הכל כפילויות).")
+        await chat.send_message("אין העברות להפקה (הכל כפילויות).")
         clear_session(chat_id)
         return
 
     sess["phase"] = "issuing"
-    status = await update.message.reply_text(f"⏳ מפיק {len(txns)} מסמכים...")
+    status = await chat.send_message(f"⏳ מפיק {len(txns)} מסמכים...")
 
     no_email = []
     lines = ["📊 *תוצאות:*\n"]
@@ -1038,7 +1171,7 @@ async def _do_issue(update: Update, sess: dict):
     for txn in txns:
         try:
             res = await issue_document(
-                cfg["finbot_token"], txn["customer_id"], txn["amount"],
+                get_finbot_token(), txn["customer_id"], txn["amount"],
                 txn["date"], txn["doc_type"], txn["payment_type"],
                 cfg, txn.get("check_details"))
         except Exception as e:
@@ -1141,6 +1274,7 @@ def main():
     app.add_handler(CommandHandler("alias", cmd_alias))
     app.add_handler(CommandHandler("unpaid", cmd_unpaid))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("receipt", cmd_receipt))
     app.add_handler(CommandHandler("invoice", cmd_invoice))
     app.add_handler(CallbackQueryHandler(handle_callback))
