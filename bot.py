@@ -171,6 +171,9 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
 async def issue_document(finbot_token: str, customer_id: int, amount: float,
                          date: str, doc_type: str, payment_type: str,
                          cfg: dict, check_details: dict = None) -> dict:
+    if not finbot_token:
+        return {"status": 0, "message": "טוקן פינבוט חסר — שלח /token או הוסף FINBOT_TOKEN ל-.env"}
+
     pre_vat = round(amount / VAT_RATE, 2)
     body = {
         "type": doc_type, "date": date,
@@ -187,10 +190,23 @@ async def issue_document(finbot_token: str, customer_id: int, amount: float,
             payment.update(check_details)
         body["payments"] = [payment]
 
+    log.info(f"Finbot API call: customer={customer_id}, amount={amount}, doc_type={doc_type}")
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(FINBOT_URL, json=body,
                          headers={"Content-Type": "application/json", "secret": finbot_token})
-    return r.json()
+
+    # Handle non-JSON and error responses
+    if r.status_code == 401:
+        log.error(f"Finbot 401 — invalid token")
+        return {"status": 0, "message": "טוקן פינבוט לא תקין (401). עדכן עם /token"}
+    try:
+        result = r.json()
+        if result.get("status") != 1:
+            log.warning(f"Finbot error: {result}")
+        return result
+    except Exception:
+        log.error(f"Finbot response not JSON. Status: {r.status_code}, Body: {r.text[:200]}")
+        return {"status": 0, "message": f"שגיאת פינבוט (HTTP {r.status_code})"}
 
 
 # ── Session state ───────────────────────────────────────────────────────────
