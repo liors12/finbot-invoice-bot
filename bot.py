@@ -169,6 +169,7 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
 # ── Finbot API ──────────────────────────────────────────────────────────────
 
 async def issue_document(finbot_token: str, customer_id: int, customer_name: str,
+                         customer_email: str, customer_tax: str,
                          amount: float, date: str, doc_type: str, payment_type: str,
                          cfg: dict, check_details: dict = None) -> dict:
     if not finbot_token:
@@ -176,13 +177,18 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
 
     pre_vat = round(amount / VAT_RATE, 2)
     lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
+    cust = {"name": customer_name, "save": False}
+    if customer_email:
+        cust["email"] = customer_email
+    if customer_tax:
+        cust["tax"] = customer_tax
     body = {
         "type": doc_type, "date": date,
         "language": lang,
         "currency": cfg.get("currency", "ILS"),
         "vatType": cfg.get("vat_type", "true") == "true",
         "rounding": cfg.get("rounding", "true") == "true",
-        "customer": {"name": customer_name, "save": False},
+        "customer": cust,
         "items": [{"name": "תשלום", "amount": 1, "price": pre_vat}],
     }
     if doc_type in ("1", "2"):
@@ -191,7 +197,7 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
             payment.update(check_details)
         body["payments"] = [payment]
 
-    log.info(f"Finbot API call: customer={customer_name}, amount={amount}, doc_type={doc_type}, lang={lang}")
+    log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, amount={amount}, doc_type={doc_type}, lang={lang}")
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(FINBOT_URL, json=body,
                          headers={"Content-Type": "application/json", "secret": finbot_token})
@@ -1300,9 +1306,14 @@ async def _do_issue(update: Update, sess: dict):
     ok = err = 0
 
     for txn in txns:
+        # Look up customer email and tax from DB
+        cust = db.get_customer(txn["customer_id"]) if txn.get("customer_id") else None
+        cust_email = (cust or {}).get("email", "")
+        cust_tax = (cust or {}).get("tax", "")
         try:
             res = await issue_document(
                 get_finbot_token(), txn["customer_id"], txn["customer_name"],
+                cust_email, cust_tax,
                 txn["amount"], txn["date"], txn["doc_type"], txn["payment_type"],
                 cfg, txn.get("check_details"))
         except Exception as e:
@@ -1333,8 +1344,7 @@ async def _do_issue(update: Update, sess: dict):
             if doc_link:
                 lines.append(f"   [צפה במסמך]({doc_link})")
             # Check missing email
-            cust = db.get_customer(txn["customer_id"])
-            if cust and not cust.get("email"):
+            if not cust_email:
                 no_email.append(txn["customer_name"])
         else:
             err += 1
