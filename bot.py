@@ -204,12 +204,23 @@ def get_session(chat_id: int) -> dict:
             "transactions": [],
             "screenshot_msg_ids": [],  # list of message IDs to delete later
             "screenshot_hashes": [],   # list of hashes for dedup
+            "status_msg_ids": [],      # collecting-phase result messages to clean up
             "pending_idx": None,
         }
     return sessions[chat_id]
 
 def clear_session(chat_id: int):
     sessions.pop(chat_id, None)
+
+async def cleanup_old_status_msgs(chat, sess: dict, keep_msg_id: int = None):
+    """Delete old collecting-phase status messages, optionally keeping one."""
+    for mid in sess.get("status_msg_ids", []):
+        if mid != keep_msg_id:
+            try:
+                await chat.delete_message(mid)
+            except:
+                pass
+    sess["status_msg_ids"] = []
 
 # ── Formatting ──────────────────────────────────────────────────────────────
 
@@ -543,6 +554,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "action_check":
         await q.answer()
         sess = get_session(chat_id)
+        await cleanup_old_status_msgs(update.effective_chat, sess, keep_msg_id=q.message.message_id)
         if sess["phase"] == "collecting":
             # Move to reviewing first, then show check
             sess["phase"] = "reviewing"
@@ -586,6 +598,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "action_summary":
         await q.answer()
         sess = get_session(chat_id)
+        await cleanup_old_status_msgs(update.effective_chat, sess, keep_msg_id=q.message.message_id)
         if sess["phase"] in ("collecting", "reviewing") and sess["transactions"]:
             sess["phase"] = "reviewing"
             await q.edit_message_text(review_text(sess["transactions"]), parse_mode="Markdown",
@@ -595,6 +608,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "action_approve":
         await q.answer()
         sess = get_session(chat_id)
+        await cleanup_old_status_msgs(update.effective_chat, sess, keep_msg_id=q.message.message_id)
         if sess["phase"] in ("reviewing", "collecting"):
             if sess["phase"] == "collecting":
                 sess["phase"] = "reviewing"
@@ -905,6 +919,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📸 שלח צילום נוסף או לחץ למטה:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(kb))
+        sess["status_msg_ids"].append(status.message_id)
 
     except ValueError as e:
         await status.edit_text(f"❌ {e}")
