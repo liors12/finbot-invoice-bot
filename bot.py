@@ -266,16 +266,14 @@ def review_text(txns: list[dict]) -> str:
 def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
     """Build inline keyboard for the review flow."""
     rows = []
-    # Per-transaction buttons: one row per transaction with delete + doc type
-    if len(txns) <= 8:
-        for i in range(len(txns)):
-            short_name = txns[i].get("customer_name", txns[i].get("bank_desc", ""))[:12]
-            rows.append([
-                InlineKeyboardButton(f"🗑 {i+1}", callback_data=f"del_{i}"),
-                InlineKeyboardButton(f"📄 {i+1} סוג", callback_data=f"dtype_{i}"),
-            ])
-    else:
-        rows.append([InlineKeyboardButton("🗑/📄 שלח טקסט: מחק # / # סוג קבלה", callback_data="action_noop")])
+    # Per-transaction delete buttons — rows of 5
+    del_btns = [InlineKeyboardButton(f"🗑{i+1}", callback_data=f"del_{i}") for i in range(len(txns))]
+    for j in range(0, len(del_btns), 5):
+        rows.append(del_btns[j:j+5])
+    # Per-transaction doc type buttons — rows of 5
+    type_btns = [InlineKeyboardButton(f"📄{i+1}", callback_data=f"dtype_{i}") for i in range(len(txns))]
+    for j in range(0, len(type_btns), 5):
+        rows.append(type_btns[j:j+5])
     # Main actions
     rows.append([
         InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
