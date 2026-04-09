@@ -467,8 +467,93 @@ async def cmd_invoice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @owner_only
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    cfg = db.get_all_config()
+    chat_id = update.effective_chat.id
     action = q.data
+
+    # ── Action buttons (review flow) ──
+    if action == "action_check":
+        await q.answer()
+        sess = get_session(chat_id)
+        if sess["phase"] == "collecting":
+            # Move to reviewing first, then show check
+            sess["phase"] = "reviewing"
+        if sess["transactions"]:
+            cfg = db.get_all_config()
+            txns = [t for t in sess["transactions"] if t["match"] not in ("duplicate",)]
+            if not txns:
+                await q.edit_message_text("אין העברות להפקה.")
+                return
+            lines = ["🔍 *מצב בדיקה — לא נשלח כלום!*\n"]
+            for i, txn in enumerate(txns):
+                pre_vat = round(txn["amount"] / VAT_RATE, 2)
+                cust = db.get_customer(txn["customer_id"]) if txn["customer_id"] else None
+                email_status = f"📧 {cust['email']}" if cust and cust.get("email") else "📭 *אין מייל — לא יישלח!*"
+                doc_label = DOC_LABELS.get(txn["doc_type"], txn["doc_type"])
+                pay_label = PAY_LABELS.get(txn["payment_type"], txn["payment_type"])
+                lines.append(f"*── עסקה {i+1} ──*")
+                lines.append(f"👤 לקוח: {txn.get('customer_name', '?')} (ID: {txn.get('customer_id', '?')})")
+                lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
+                lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
+                lines.append(f"📄 סוג מסמך: {doc_label}")
+                lines.append(f"💳 אמצעי תשלום: {pay_label}")
+                lines.append(f"📅 תאריך: {txn['date']}")
+                lines.append(f"{email_status}")
+                now = datetime.now(TZ)
+                threshold = ALLOCATION_THRESHOLD_JUN if now.month >= 6 and now.year >= 2026 else ALLOCATION_THRESHOLD
+                if pre_vat >= threshold:
+                    lines.append(f"📋 *מספר הקצאה יידרש* (מעל {fmt(threshold)})")
+                lines.append("")
+            lines.append(f"*סה\"כ: {len(txns)} מסמכים*")
+            kb = [[
+                InlineKeyboardButton("✅ אישור — הפקה ושליחה", callback_data="action_approve"),
+            ], [
+                InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+            ]]
+            await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
+                                      reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if action == "action_summary":
+        await q.answer()
+        sess = get_session(chat_id)
+        if sess["phase"] == "collecting" and sess["transactions"]:
+            sess["phase"] = "reviewing"
+            await q.edit_message_text(review_text(sess["transactions"]), parse_mode="Markdown")
+        return
+
+    if action == "action_approve":
+        await q.answer()
+        sess = get_session(chat_id)
+        if sess["phase"] in ("reviewing", "collecting"):
+            if sess["phase"] == "collecting":
+                sess["phase"] = "reviewing"
+            txns = sess["transactions"]
+            to_issue = [t for t in txns if t["match"] not in ("duplicate",)]
+            unresolved = [i for i, t in enumerate(to_issue)
+                          if t["match"] in ("unknown", "special_check", "special_ask", "similar")]
+            if unresolved:
+                nums = ", ".join(str(i + 1) for i in unresolved)
+                await q.edit_message_text(
+                    f"⚠️ פריטים {nums} לא מוכנים.\n\n"
+                    f"טפל בהם, מחק (`מחק <#>`), או אשר שאלות (`<#> כן`).",
+                    parse_mode="Markdown")
+                return
+            # Create a fake Update-like object for _do_issue
+            await _do_issue(update, sess)
+        return
+
+    if action == "action_cancel":
+        await q.answer()
+        clear_session(chat_id)
+        await q.edit_message_text("❌ בוטל.")
+        return
+
+    if action == "action_noop":
+        await q.answer("📸 שלח צילום מסך נוסף")
+        return
+
+    # ── Settings toggle buttons ──
+    cfg = db.get_all_config()
     if action == "tog_currency":
         opts = ["ILS", "USD", "EUR"]
         cur = cfg.get("currency", "ILS")
@@ -479,6 +564,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db.set_config("language", "en" if cfg.get("language", "he") == "he" else "he")
     elif action == "tog_round":
         db.set_config("rounding", "false" if cfg.get("rounding", "true") == "true" else "true")
+    else:
+        await q.answer()
+        return
     await q.answer("✅")
     # Refresh settings display
     cfg = db.get_all_config()
@@ -529,11 +617,16 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Only accept photos in idle or collecting phase
     if sess["phase"] not in ("idle", "collecting"):
+        kb = [[
+            InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+            InlineKeyboardButton("✅ אישור", callback_data="action_approve"),
+        ], [
+            InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+        ]]
         await update.message.reply_text(
-            "⚠️ *יש עסקאות בבדיקה כרגע.*\n\n"
-            "כדי לאשר ולהפיק חשבוניות — שלח `אישור`\n"
-            "כדי לבטל ולהתחיל מחדש — שלח /cancel",
-            parse_mode="Markdown")
+            "📸 *קיבלתי את צילומי המסך שלך ויש עסקאות שמחכות לטיפול.*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb))
         return
 
     sess["screenshot_msg_ids"].append(update.message.message_id)
@@ -647,11 +740,17 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_screenshots = len(sess["screenshot_hashes"])
         total_amount = sum(t["amount"] for t in sess["transactions"])
 
+        kb = [[
+            InlineKeyboardButton("📸 הוסף צילום נוסף", callback_data="action_noop"),
+        ], [
+            InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+            InlineKeyboardButton("✅ סיכום ואישור", callback_data="action_summary"),
+        ]]
         await status.edit_text(
             f"✅ זוהו *{len(new_txns)}* העברות חדשות מצילום #{total_screenshots}\n\n"
-            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}\n\n"
-            f"📸 שלח צילום מסך נוסף, או שלח `סיכום` כדי לעבור לבדיקה ואישור.",
-            parse_mode="Markdown")
+            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb))
 
     except ValueError as e:
         await status.edit_text(f"❌ {e}")
