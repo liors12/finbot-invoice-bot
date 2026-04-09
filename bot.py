@@ -303,7 +303,7 @@ def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
             rows.append(new_btns[j:j+5])
     # Main actions
     rows.append([
-        InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+        InlineKeyboardButton("📋 פרטים מלאים", callback_data="action_check"),
         InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
     ])
     rows.append([
@@ -618,20 +618,44 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             unresolved = [i for i, t in enumerate(to_issue)
                           if t["match"] in ("unknown", "special_check", "special_ask", "similar")]
             if unresolved:
-                nums = ", ".join(str(i + 1) for i in unresolved)
-                kb = [[
+                # Build descriptive list + action buttons for each unresolved item
+                lines = ["⚠️ *פריטים לא מוכנים:*\n"]
+                kb = []
+                for i in unresolved:
+                    t = to_issue[i]
+                    match_type = t.get("match", "")
+                    desc = esc(t.get("bank_desc", ""))
+                    if match_type == "special_check":
+                        lines.append(f"*{i+1}.* {desc} — צ'ק, צריך פרטים")
+                        kb.append([
+                            InlineKeyboardButton(f"✅ אשר {i+1}", callback_data=f"confirm_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                        ])
+                    elif match_type == "unknown":
+                        lines.append(f"*{i+1}.* {desc} — לקוח לא מוכר")
+                        kb.append([
+                            InlineKeyboardButton(f"🆕 שייך {i+1}", callback_data=f"newcust_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                        ])
+                    elif match_type in ("special_ask", "similar"):
+                        lines.append(f"*{i+1}.* {desc} — {esc(t.get('special_msg', 'צריך אישור'))}")
+                        kb.append([
+                            InlineKeyboardButton(f"✅ אשר {i+1}", callback_data=f"confirm_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                        ])
+                kb.append([
                     InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
                     InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
-                ]]
+                ])
                 try:
                     await q.edit_message_text(
-                        f"⚠️ פריטים {nums} לא מוכנים.\n\n"
-                        f"טפל בהם, מחק (מחק #), או אשר שאלות (# כן).",
+                        "\n".join(lines),
+                        parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup(kb))
                 except Exception as e:
                     log.error(f"Failed to edit message: {e}")
                     await update.effective_chat.send_message(
-                        f"⚠️ פריטים {nums} לא מוכנים. טפל בהם או מחק אותם.")
+                        "\n".join(lines))
                 return
             try:
                 await _do_issue(update, sess)
@@ -731,6 +755,35 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.answer("⚠️ שורה לא קיימת", show_alert=True)
         return
 
+    # ── Per-transaction: confirm (special_check, special_ask, similar) ──
+    if action.startswith("confirm_"):
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            txn = txns[idx]
+            if txn["match"] == "special_check" and txn.get("customer_id"):
+                # Ask for check details
+                sess["phase"] = "check_details"
+                sess["pending_idx"] = idx
+                await q.edit_message_text(
+                    f"📝 *פרטי צ'ק עבור {esc(txn['customer_name'])}:*\n"
+                    f"`בנק,סניף,חשבון,מספר_צק`\n\n"
+                    f"לא חובה — לדלג שלח `דלג`",
+                    parse_mode="Markdown")
+            elif txn["match"] in ("special_ask", "similar") and txn.get("customer_id"):
+                txn["match"] = "matched"
+                sess["phase"] = "reviewing"
+                await q.edit_message_text(
+                    review_text(txns), parse_mode="Markdown",
+                    reply_markup=review_keyboard(txns))
+            else:
+                await q.answer("⚠️ לא ניתן לאשר — חסר לקוח", show_alert=True)
+        else:
+            await q.answer("⚠️ שורה לא קיימת", show_alert=True)
+        return
+
     # ── Settings toggle buttons ──
     cfg = db.get_all_config()
     if action == "tog_currency":
@@ -797,7 +850,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Only accept photos in idle or collecting phase
     if sess["phase"] not in ("idle", "collecting"):
         kb = [[
-            InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+            InlineKeyboardButton("📋 פרטים מלאים", callback_data="action_check"),
             InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
         ], [
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
@@ -920,7 +973,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_amount = sum(t["amount"] for t in sess["transactions"])
 
         kb = [[
-            InlineKeyboardButton("🔍 בדיקה", callback_data="action_check"),
+            InlineKeyboardButton("📋 פרטים מלאים", callback_data="action_check"),
             InlineKeyboardButton("✅ סיכום ואישור", callback_data="action_summary"),
         ], [
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
