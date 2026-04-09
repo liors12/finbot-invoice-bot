@@ -123,7 +123,9 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
         }
     }
 
-    # Try each key until one works (handles rate limits)
+    GEMINI_TIMEOUT = 60  # seconds
+
+    # Try each key until one works (handles rate limits and timeouts)
     last_error = None
     for attempt in range(len(GEMINI_KEYS)):
         key = get_next_gemini_key()
@@ -141,8 +143,12 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
             return response.text
 
         try:
-            txt = await asyncio.to_thread(_call)
+            txt = await asyncio.wait_for(asyncio.to_thread(_call), timeout=GEMINI_TIMEOUT)
             break
+        except asyncio.TimeoutError:
+            last_error = TimeoutError(f"Gemini did not respond within {GEMINI_TIMEOUT}s")
+            log.warning(f"Gemini timeout with key #{attempt+1}, trying next key...")
+            continue
         except Exception as e:
             last_error = e
             if "429" in str(e) or "Resource" in str(e):
@@ -150,7 +156,7 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
                 continue
             raise
     else:
-        raise ValueError(f"All {len(GEMINI_KEYS)} Gemini keys are rate limited. Try again later.")
+        raise ValueError(f"All {len(GEMINI_KEYS)} Gemini keys failed. Last error: {last_error}")
     txt = txt.strip()
     txt = re.sub(r'^```\w*\n?', '', txt)
     txt = re.sub(r'\n?```$', '', txt)
