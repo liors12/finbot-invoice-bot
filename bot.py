@@ -168,20 +168,21 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
 
 # ── Finbot API ──────────────────────────────────────────────────────────────
 
-async def issue_document(finbot_token: str, customer_id: int, amount: float,
-                         date: str, doc_type: str, payment_type: str,
+async def issue_document(finbot_token: str, customer_id: int, customer_name: str,
+                         amount: float, date: str, doc_type: str, payment_type: str,
                          cfg: dict, check_details: dict = None) -> dict:
     if not finbot_token:
         return {"status": 0, "message": "טוקן פינבוט חסר — שלח /token או הוסף FINBOT_TOKEN ל-.env"}
 
     pre_vat = round(amount / VAT_RATE, 2)
+    lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
     body = {
         "type": doc_type, "date": date,
-        "language": cfg.get("language", "he"),
+        "language": lang,
         "currency": cfg.get("currency", "ILS"),
         "vatType": cfg.get("vat_type", "true") == "true",
         "rounding": cfg.get("rounding", "true") == "true",
-        "customer": {"id": customer_id},
+        "customer": {"name": customer_name, "save": False},
         "items": [{"name": "תשלום", "amount": 1, "price": pre_vat}],
     }
     if doc_type in ("1", "2"):
@@ -190,7 +191,7 @@ async def issue_document(finbot_token: str, customer_id: int, amount: float,
             payment.update(check_details)
         body["payments"] = [payment]
 
-    log.info(f"Finbot API call: customer={customer_id}, amount={amount}, doc_type={doc_type}")
+    log.info(f"Finbot API call: customer={customer_name}, amount={amount}, doc_type={doc_type}, lang={lang}")
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(FINBOT_URL, json=body,
                          headers={"Content-Type": "application/json", "secret": finbot_token})
@@ -1301,8 +1302,8 @@ async def _do_issue(update: Update, sess: dict):
     for txn in txns:
         try:
             res = await issue_document(
-                get_finbot_token(), txn["customer_id"], txn["amount"],
-                txn["date"], txn["doc_type"], txn["payment_type"],
+                get_finbot_token(), txn["customer_id"], txn["customer_name"],
+                txn["amount"], txn["date"], txn["doc_type"], txn["payment_type"],
                 cfg, txn.get("check_details"))
         except Exception as e:
             res = {"status": 0, "message": str(e)}
