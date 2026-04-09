@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Finbot Invoice Automation — Telegram Bot v2
 =============================================
