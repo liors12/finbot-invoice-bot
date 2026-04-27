@@ -602,7 +602,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 doc_label = DOC_LABELS.get(txn["doc_type"], txn["doc_type"])
                 pay_label = PAY_LABELS.get(txn["payment_type"], txn["payment_type"])
                 lines.append(f"*── עסקה {i+1} ──*")
-                lines.append(f"👤 לקוח: {txn.get('customer_name', '?')} (ID: {txn.get('customer_id', '?')})")
+                lines.append(f"🏦 {esc(txn.get('bank_desc', '?'))}")
+                cust_display = txn.get('customer_name', '')
+                if cust_display:
+                    lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
+                else:
+                    lines.append(f"👤 לקוח: *לא מוכר*")
                 lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
                 lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
                 lines.append(f"📄 סוג מסמך: {doc_label}")
@@ -972,6 +977,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     txn["match"] = "special_ask"
                     txn["special_msg"] = special["message"]
                     txn["payment_type"] = special.get("payment_type", "1")
+                    if special.get("likely_finbot_id"):
+                        cust = db.get_customer(special["likely_finbot_id"])
+                        if cust:
+                            txn["customer_id"] = cust["finbot_id"]
+                            txn["customer_name"] = cust["name"]
+                            txn["doc_type"] = cust["doc_type"]
             else:
                 # ── Normal match ──
                 cust = db.match_customer(clean)
@@ -1162,7 +1173,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pay_label = PAY_LABELS.get(txn["payment_type"], txn["payment_type"])
 
             lines.append(f"*── עסקה {i+1} ──*")
-            lines.append(f"👤 לקוח: {txn.get('customer_name', '?')} (ID: {txn.get('customer_id', '?')})")
+            lines.append(f"🏦 {esc(txn.get('bank_desc', '?'))}")
+            cust_display = txn.get('customer_name', '')
+            if cust_display:
+                lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
+            else:
+                lines.append(f"👤 לקוח: *לא מוכר*")
             lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
             lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
             lines.append(f"📄 סוג מסמך: {doc_label}")
