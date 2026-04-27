@@ -973,6 +973,10 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             txn["customer_name"] = cust["name"]
                             txn["payment_type"] = "3"
                             txn["doc_type"] = cust["doc_type"]
+                            # Already issued this month? Auto-filter
+                            similar = db.find_similar_txn(txn["date"], txn["amount"], cust["finbot_id"])
+                            if similar:
+                                txn["match"] = "duplicate"
                 elif special["source_type"] == "payme_ask":
                     txn["match"] = "special_ask"
                     txn["special_msg"] = special["message"]
@@ -983,6 +987,10 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             txn["customer_id"] = cust["finbot_id"]
                             txn["customer_name"] = cust["name"]
                             txn["doc_type"] = cust["doc_type"]
+                            # Already issued this month? Auto-filter
+                            similar = db.find_similar_txn(txn["date"], txn["amount"], cust["finbot_id"])
+                            if similar:
+                                txn["match"] = "duplicate"
             else:
                 # ── Normal match ──
                 cust = db.match_customer(clean)
@@ -993,10 +1001,10 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     txn["doc_type"] = cust["doc_type"]
                     txn["payment_type"] = cust["payment_type"]
 
-                    # ── Similar transaction warning ──
+                    # ── Already issued this month? Auto-filter ──
                     similar = db.find_similar_txn(txn["date"], txn["amount"], cust["finbot_id"])
                     if similar:
-                        txn["match"] = "similar"
+                        txn["match"] = "duplicate"
 
             new_txns.append(txn)
 
