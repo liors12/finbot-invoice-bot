@@ -176,6 +176,8 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
         return {"status": 0, "message": "טוקן פינבוט חסר — שלח /token או הוסף FINBOT_TOKEN ל-.env"}
 
     pre_vat = round(amount / VAT_RATE, 2)
+    vat_amount = round(pre_vat * 0.18, 2)
+    payment_sum = pre_vat + vat_amount  # Guaranteed to match items + VAT
     lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
     cust = {"name": customer_name, "save": False}
     if customer_email:
@@ -192,13 +194,13 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
         "items": [{"name": "תשלום", "amount": 1, "price": pre_vat}],
     }
     if doc_type in ("1", "2"):
-        payment = {"type": payment_type, "date": date, "sum": amount}
+        payment = {"type": payment_type, "date": date, "sum": payment_sum}
         if payment_type == "3" and check_details:
             payment.update(check_details)
         body["payments"] = [payment]
 
     log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, amount={amount}, doc_type={doc_type}, lang={lang}")
-    async with httpx.AsyncClient(timeout=30) as c:
+    async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post(FINBOT_URL, json=body,
                          headers={"Content-Type": "application/json", "secret": finbot_token})
 
@@ -208,6 +210,11 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
         return {"status": 0, "message": "טוקן פינבוט לא תקין (401). עדכן עם /token"}
     try:
         result = r.json()
+        # Finbot returns list of errors on failure, dict on success
+        if isinstance(result, list):
+            errors = ", ".join(e.get("message", str(e)) for e in result)
+            log.warning(f"Finbot errors: {errors}")
+            return {"status": 0, "message": errors}
         if result.get("status") != 1:
             log.warning(f"Finbot error: {result}")
         return result
@@ -894,9 +901,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # ── Screenshot-level dedup ──
         ss_hash = db.make_screenshot_hash(img)
-        if db.is_screenshot_processed(ss_hash):
-            await status.edit_text("⚠️ צילום מסך זה כבר עובד בעבר. שלח צילום חדש.")
-            return
+        is_reupload = db.is_screenshot_processed(ss_hash)
         sess["screenshot_hashes"].append(ss_hash)
 
         await status.edit_text("🔍 מזהה העברות...")
@@ -984,16 +989,24 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
             new_txns.append(txn)
 
+        # Filter: count non-duplicate new transactions
+        new_non_dup = [t for t in new_txns if t["match"] != "duplicate"]
         if not new_txns:
             await status.edit_text("😕 לא נמצאו העברות חדשות בצילום הזה.")
+            return
+        if not new_non_dup and is_reupload:
+            await status.edit_text(
+                "⚠️ כל ההעברות בצילום הזה כבר הונפקו בהצלחה.\n"
+                "שלח צילום מסך חדש עם העברות שלא טופלו.")
             return
 
         sess["transactions"].extend(new_txns)
         sess["phase"] = "collecting"
 
-        total_txns = len(sess["transactions"])
+        total_txns = len([t for t in sess["transactions"] if t["match"] != "duplicate"])
         total_screenshots = len(sess["screenshot_hashes"])
-        total_amount = sum(t["amount"] for t in sess["transactions"])
+        total_amount = sum(t["amount"] for t in sess["transactions"] if t["match"] != "duplicate")
+        dup_count = len(new_txns) - len(new_non_dup)
 
         kb = [[
             InlineKeyboardButton("📋 פרטים מלאים", callback_data="action_check"),
@@ -1001,8 +1014,9 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ], [
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
         ]]
+        dup_note = f"\n🔁 {dup_count} כפולות סוננו" if dup_count else ""
         await status.edit_text(
-            f"✅ זוהו *{len(new_txns)}* העברות חדשות מצילום #{total_screenshots}\n\n"
+            f"✅ זוהו *{len(new_non_dup)}* העברות חדשות מצילום #{total_screenshots}{dup_note}\n\n"
             f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}\n\n"
             f"📸 שלח צילום נוסף או לחץ למטה:",
             parse_mode="Markdown",
