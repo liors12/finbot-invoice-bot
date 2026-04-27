@@ -1024,22 +1024,47 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         total_txns = len([t for t in sess["transactions"] if t["match"] != "duplicate"])
         total_screenshots = len(sess["screenshot_hashes"])
-        total_amount = sum(t["amount"] for t in sess["transactions"] if t["match"] != "duplicate")
         dup_count = len(new_txns) - len(new_non_dup)
 
+        # Build full detail view directly
+        txns_display = [t for t in sess["transactions"] if t["match"] != "duplicate"]
+        cfg = db.get_all_config()
+        dup_note = f"🔁 {dup_count} כפולות סוננו\n" if dup_count else ""
+        lines = [f"📋 *כל ההעברות שזוהו מכל הצילומים:*\n{dup_note}"]
+        for i, txn in enumerate(txns_display):
+            pre_vat = round(txn["amount"] / VAT_RATE, 2)
+            cust = db.get_customer(txn["customer_id"]) if txn["customer_id"] else None
+            email_status = f"📧 {cust['email']}" if cust and cust.get("email") else "📭 *אין מייל — לא יישלח!*"
+            doc_label = DOC_LABELS.get(txn["doc_type"], txn["doc_type"])
+            pay_label = PAY_LABELS.get(txn["payment_type"], txn["payment_type"])
+            lines.append(f"*── עסקה {i+1} ──*")
+            lines.append(f"🏦 {esc(txn.get('bank_desc', '?'))}")
+            cust_display = txn.get('customer_name', '')
+            if cust_display:
+                lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
+            else:
+                lines.append(f"👤 לקוח: *לא מוכר*")
+            lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
+            lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
+            lines.append(f"📄 סוג מסמך: {doc_label}")
+            lines.append(f"💳 אמצעי תשלום: {pay_label}")
+            lines.append(f"📅 תאריך: {txn['date']}")
+            lines.append(f"{email_status}")
+            now_check = datetime.now(TZ)
+            threshold = ALLOCATION_THRESHOLD_JUN if now_check.month >= 6 and now_check.year >= 2026 else ALLOCATION_THRESHOLD
+            if pre_vat >= threshold:
+                lines.append(f"📋 *מספר הקצאה יידרש* (מעל {fmt(threshold)})")
+            lines.append("")
+        lines.append(f"*סה\"כ: {len(txns_display)} מסמכים*")
+
         kb = [[
-            InlineKeyboardButton("📋 פרטים מלאים", callback_data="action_check"),
-            InlineKeyboardButton("✅ סיכום ואישור", callback_data="action_summary"),
+            InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
         ], [
+            InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
             InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
         ]]
-        dup_note = f"\n🔁 {dup_count} כפולות סוננו" if dup_count else ""
-        await status.edit_text(
-            f"✅ זוהו *{len(new_non_dup)}* העברות חדשות מצילום #{total_screenshots}{dup_note}\n\n"
-            f"📊 *סה\"כ עד עכשיו:* {total_txns} העברות | {fmt(total_amount)}\n\n"
-            f"📸 שלח צילום נוסף או לחץ למטה:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb))
+        await status.edit_text("\n".join(lines), parse_mode="Markdown",
+                               reply_markup=InlineKeyboardMarkup(kb))
         sess["status_msg_ids"].append(status.message_id)
 
     except ValueError as e:
