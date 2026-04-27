@@ -607,13 +607,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if cust_display:
                     lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
                 else:
-                    lines.append(f"👤 לקוח: *לא מוכר*")
+                    lines.append(f"👤 לקוח: *לא מוכר — לחץ עריכה → 🆕 שייך*")
                 lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
                 lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
                 lines.append(f"📄 סוג מסמך: {doc_label}")
                 lines.append(f"💳 אמצעי תשלום: {pay_label}")
                 lines.append(f"📅 תאריך: {txn['date']}")
-                lines.append(f"{email_status}")
+                if txn.get("match") == "unknown":
+                    lines.append(f"🆕 *שלח מייל כדי להוציא חשבונית*")
+                else:
+                    lines.append(f"{email_status}")
                 now = datetime.now(TZ)
                 threshold = ALLOCATION_THRESHOLD_JUN if now.month >= 6 and now.year >= 2026 else ALLOCATION_THRESHOLD
                 if pre_vat >= threshold:
@@ -1045,13 +1048,16 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if cust_display:
                 lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
             else:
-                lines.append(f"👤 לקוח: *לא מוכר*")
+                lines.append(f"👤 לקוח: *לא מוכר — לחץ עריכה → 🆕 שייך*")
             lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
             lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
             lines.append(f"📄 סוג מסמך: {doc_label}")
             lines.append(f"💳 אמצעי תשלום: {pay_label}")
             lines.append(f"📅 תאריך: {txn['date']}")
-            lines.append(f"{email_status}")
+            if txn.get("match") == "unknown":
+                lines.append(f"🆕 *שלח מייל כדי להוציא חשבונית*")
+            else:
+                lines.append(f"{email_status}")
             now_check = datetime.now(TZ)
             threshold = ALLOCATION_THRESHOLD_JUN if now_check.month >= 6 and now_check.year >= 2026 else ALLOCATION_THRESHOLD
             if pre_vat >= threshold:
@@ -1229,13 +1235,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if cust_display:
                 lines.append(f"👤 לקוח: {esc(cust_display)} (ID: {txn.get('customer_id', '?')})")
             else:
-                lines.append(f"👤 לקוח: *לא מוכר*")
+                lines.append(f"👤 לקוח: *לא מוכר — לחץ עריכה → 🆕 שייך*")
             lines.append(f"💰 סכום כולל מע\"מ: {fmt(txn['amount'])}")
             lines.append(f"💰 סכום לפני מע\"מ: {fmt(pre_vat)}")
             lines.append(f"📄 סוג מסמך: {doc_label}")
             lines.append(f"💳 אמצעי תשלום: {pay_label}")
             lines.append(f"📅 תאריך: {txn['date']}")
-            lines.append(f"{email_status}")
+            if txn.get("match") == "unknown":
+                lines.append(f"🆕 *שלח מייל כדי להוציא חשבונית*")
+            else:
+                lines.append(f"{email_status}")
 
             # Check allocation threshold
             now = datetime.now(TZ)
