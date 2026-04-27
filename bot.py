@@ -1401,15 +1401,17 @@ async def _do_issue(update: Update, sess: dict):
         except:
             pass
 
-    # ── Unpaid check (from 15th onwards) ──
+    # ── Overdue check (show who's late based on their due date) ──
     now = datetime.now(TZ)
-    if now.day >= 15:
+    if now.day >= 10:
         month_key = now.strftime("%Y-%m")
-        unpaid = db.get_unpaid_active(month_key)
-        if unpaid:
-            ulines = [f"\n🚨 *לא שילמו עדיין ({month_key}):*\n"]
-            for c in unpaid:
-                ulines.append(f"  ⏳ {c['name']} (ID: {c['finbot_id']})")
+        overdue = db.get_overdue_customers(month_key, now.day)
+        if overdue:
+            ulines = [f"\n🚨 *לא שילמו — {month_key}:*\n"]
+            for c in overdue:
+                due = c.get("payment_due_day", 10)
+                days_late = now.day - due
+                ulines.append(f"  ⏳ {c['name']} — איחור {days_late} ימים (עד ה-{due})")
             await update.effective_chat.send_message(
                 "\n".join(ulines), parse_mode="Markdown")
 
@@ -1421,14 +1423,15 @@ async def daily_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(TZ)
     if now.day not in REMINDER_DAYS:
         return
-    if OWNER_CHAT_ID:
-        try:
-            await ctx.bot.send_message(
-                OWNER_CHAT_ID,
-                "📸 *תזכורת*\nשלח צילום מסך של One Zero.",
-                parse_mode="Markdown")
-        except Exception as e:
-            log.error(f"Reminder failed: {e}")
+    if not OWNER_CHAT_ID:
+        return
+    try:
+        await ctx.bot.send_message(
+            OWNER_CHAT_ID,
+            "📸 *תזכורת*\nשלח צילום מסך של One Zero.",
+            parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Reminder failed: {e}")
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
