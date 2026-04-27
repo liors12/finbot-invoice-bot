@@ -384,6 +384,21 @@ class Database:
             """, (month_key,)).fetchall()
             return [dict(r) for r in rows]
 
+    def get_overdue_customers(self, month_key: str, today_day: int) -> list[dict]:
+        """Active customers whose payment_due_day has passed and haven't paid this month."""
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT c.* FROM customers c
+                WHERE c.active = 1
+                AND c.payment_due_day <= ?
+                AND c.finbot_id NOT IN (
+                    SELECT DISTINCT finbot_id FROM processed_txns
+                    WHERE month_key = ? AND finbot_status = 'success'
+                )
+                ORDER BY c.payment_due_day, c.name
+            """, (today_day, month_key)).fetchall()
+            return [dict(r) for r in rows]
+
     # ── Excel import ────────────────────────────────────────────────────
     def import_from_excel(self, file_bytes: bytes) -> tuple[int, int]:
         """Import customers from Finbot Excel export. Returns (added, updated)."""
