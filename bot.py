@@ -780,11 +780,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             txn = txns[idx]
             sess["phase"] = "unknown_customer"
             sess["pending_idx"] = idx
+            clean = esc(txn.get('clean_name', txn.get('bank_desc', '?')))
             await q.edit_message_text(
-                f"🆕 *שיוך לקוח לשורה {idx+1}:*\n"
-                f"{esc(txn['bank_desc'])} — {fmt(txn['amount'])}\n\n"
-                f"שלח מספר סידורי של הלקוח מפינבוט.\n"
-                f"לחזרה שלח `דלג`",
+                f"🆕 *לקוח לא מוכר: {clean}*\n"
+                f"סכום: {fmt(txn['amount'])} | תאריך: {txn['date']}\n\n"
+                f"שלח את כתובת המייל של הלקוח.\n"
+                f"הבוט ישמור את הלקוח ויוציא חשבונית.\n\n"
+                f"לדלג (בלי מייל) שלח `דלג`",
                 parse_mode="Markdown")
         else:
             await q.answer("⚠️ שורה לא קיימת", show_alert=True)
@@ -1127,39 +1129,55 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown")
         return
 
-    # ── Unknown customer — waiting for Finbot ID ──
+    # ── Unknown customer — waiting for email ──
     if sess["phase"] == "unknown_customer":
         idx = sess["pending_idx"]
         txn = sess["transactions"][idx]
 
-        # Allow going back
+        # Allow going back / skip without email
         if text in ("דלג", "חזור", "ביטול"):
-            sess["phase"] = "reviewing"
-            sess["pending_idx"] = None
-            await update.message.reply_text(
-                f"↩️ חזרה לבדיקה.\n\n" + review_text(sess["transactions"]),
-                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
-            return
-
-        try:
-            fid = int(text.strip())
-            # Save alias + create customer if needed
+            # Skip = use bank name as customer, no email
             clean = txn["clean_name"]
-            existing = db.get_customer(fid)
-            if not existing:
-                db.upsert_customer(fid, clean)
-            db.add_alias(clean, fid, "auto")
-            cust = db.get_customer(fid)
-            txn["customer_id"] = fid
-            txn["customer_name"] = cust["name"]
+            # Generate a local ID for new customer
+            with db._conn() as conn:
+                max_id = conn.execute("SELECT MAX(finbot_id) FROM customers").fetchone()[0] or 900000
+            local_id = max(max_id + 1, 900000)
+            db.upsert_customer(local_id, clean, email="")
+            db.add_alias(clean, local_id, "auto")
+            txn["customer_id"] = local_id
+            txn["customer_name"] = clean
             txn["match"] = "matched"
             sess["phase"] = "reviewing"
             sess["pending_idx"] = None
             await update.message.reply_text(
-                f"✅ '{clean}' → {cust['name']} (ID {fid}) — נשמר!\n\n" +
-                review_text(sess["transactions"]), parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
-        except ValueError:
-            await update.message.reply_text("⚠️ שלח מספר סידורי בלבד, או `דלג` לחזרה.", parse_mode="Markdown")
+                f"✅ לקוח חדש: {esc(clean)} (בלי מייל)\n\n" +
+                review_text(sess["transactions"]),
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
+            return
+
+        # Expect email address
+        email = text.strip()
+        if "@" in email and "." in email:
+            clean = txn["clean_name"]
+            # Generate a local ID for new customer
+            with db._conn() as conn:
+                max_id = conn.execute("SELECT MAX(finbot_id) FROM customers").fetchone()[0] or 900000
+            local_id = max(max_id + 1, 900000)
+            db.upsert_customer(local_id, clean, email=email)
+            db.add_alias(clean, local_id, "auto")
+            txn["customer_id"] = local_id
+            txn["customer_name"] = clean
+            txn["match"] = "matched"
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"✅ לקוח חדש: {esc(clean)}\n📧 {email}\n\n" +
+                review_text(sess["transactions"]),
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
+        else:
+            await update.message.reply_text(
+                "⚠️ שלח כתובת מייל תקינה, או `דלג` להמשיך בלי מייל.",
+                parse_mode="Markdown")
         return
 
     if sess["phase"] != "reviewing":
