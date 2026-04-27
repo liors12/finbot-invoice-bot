@@ -653,33 +653,36 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 sess["phase"] = "reviewing"
             txns = sess["transactions"]
             to_issue = [t for t in txns if t["match"] not in ("duplicate",)]
-            unresolved = [i for i, t in enumerate(to_issue)
+            # Use indices from FULL txns list (not to_issue) so buttons match handlers
+            unresolved = [i for i, t in enumerate(txns)
                           if t["match"] in ("unknown", "special_check", "special_ask", "similar")]
             if unresolved:
                 # Build descriptive list + action buttons for each unresolved item
                 lines = ["⚠️ *פריטים לא מוכנים:*\n"]
                 kb = []
+                display_num = 0
                 for i in unresolved:
-                    t = to_issue[i]
+                    display_num += 1
+                    t = txns[i]
                     match_type = t.get("match", "")
                     desc = esc(t.get("bank_desc", ""))
                     if match_type == "special_check":
-                        lines.append(f"*{i+1}.* {desc} — צ'ק, צריך פרטים")
+                        lines.append(f"*{display_num}.* {desc} — צ'ק, צריך פרטים")
                         kb.append([
-                            InlineKeyboardButton(f"✅ אשר {i+1}", callback_data=f"confirm_{i}"),
-                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                            InlineKeyboardButton(f"✅ אשר {display_num}", callback_data=f"confirm_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {display_num}", callback_data=f"del_{i}"),
                         ])
                     elif match_type == "unknown":
-                        lines.append(f"*{i+1}.* {desc} — לקוח לא מוכר")
+                        lines.append(f"*{display_num}.* {desc} — לקוח לא מוכר")
                         kb.append([
-                            InlineKeyboardButton(f"🆕 שייך {i+1}", callback_data=f"newcust_{i}"),
-                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                            InlineKeyboardButton(f"🆕 שייך {display_num}", callback_data=f"newcust_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {display_num}", callback_data=f"del_{i}"),
                         ])
                     elif match_type in ("special_ask", "similar"):
-                        lines.append(f"*{i+1}.* {desc} — {esc(t.get('special_msg', 'צריך אישור'))}")
+                        lines.append(f"*{display_num}.* {desc} — {esc(t.get('special_msg', 'צריך אישור'))}")
                         kb.append([
-                            InlineKeyboardButton(f"✅ אשר {i+1}", callback_data=f"confirm_{i}"),
-                            InlineKeyboardButton(f"🗑 מחק {i+1}", callback_data=f"del_{i}"),
+                            InlineKeyboardButton(f"✅ אשר {display_num}", callback_data=f"confirm_{i}"),
+                            InlineKeyboardButton(f"🗑 מחק {display_num}", callback_data=f"del_{i}"),
                         ])
                 kb.append([
                     InlineKeyboardButton("✏️ עריכה", callback_data="action_summary"),
@@ -801,10 +804,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         idx = int(action.split("_")[1])
         sess = get_session(chat_id)
         txns = sess.get("transactions", [])
+        log.info(f"confirm_{idx}: phase={sess['phase']}, txns={len(txns)}")
         if 0 <= idx < len(txns):
             txn = txns[idx]
+            log.info(f"confirm_{idx}: match={txn['match']}, customer_id={txn.get('customer_id')}")
             if txn["match"] == "special_check" and txn.get("customer_id"):
-                # Ask for check details
                 sess["phase"] = "check_details"
                 sess["pending_idx"] = idx
                 await q.edit_message_text(
@@ -821,6 +825,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 await q.answer("⚠️ לא ניתן לאשר — חסר לקוח", show_alert=True)
         else:
+            log.warning(f"confirm_{idx}: index out of range (txns has {len(txns)} items)")
             await q.answer("⚠️ שורה לא קיימת", show_alert=True)
         return
 
