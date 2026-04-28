@@ -188,7 +188,7 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
         "language": lang,
         "currency": cfg.get("currency", "ILS"),
         "vatType": cfg.get("vat_type", "true") == "true",
-        "rounding": cfg.get("rounding", "true") == "true",
+        "rounding": False,
         "customer": cust,
         "items": [{"name": "תשלום", "amount": 1, "price": pre_vat}],
     }
@@ -285,7 +285,7 @@ def review_text(txns: list[dict]) -> str:
         elif t.get("match") == "unknown":
             flags.append("🆕 לקוח לא מוכר")
         elif t.get("match") == "duplicate":
-            flags.append("🔁 *כפילות*")
+            flags.append("✅ *חשבונית הונפקה כבר*")
         elif t.get("match") == "similar":
             flags.append("⚠️ *עסקה דומה קיימת*")
 
@@ -1092,7 +1092,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Build full detail view directly
         txns_display = [t for t in sess["transactions"] if t["match"] != "duplicate"]
         cfg = db.get_all_config()
-        dup_note = f"🔁 {dup_count} כפולות סוננו\n" if dup_count else ""
+        dup_note = f"✅ {dup_count} חשבוניות כבר הונפקו\n" if dup_count else ""
         lines = [f"📋 *כל ההעברות שזוהו מכל הצילומים:*\n{dup_note}"]
         for i, txn in enumerate(txns_display):
             pre_vat = round(txn["amount"] / VAT_RATE, 2)
