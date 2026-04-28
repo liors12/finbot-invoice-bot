@@ -216,6 +216,10 @@ class Database:
         with self._conn() as conn:
             conn.execute("UPDATE customers SET doc_type=? WHERE finbot_id=?", (doc_type, finbot_id))
 
+    def update_customer_email(self, finbot_id: int, email: str):
+        with self._conn() as conn:
+            conn.execute("UPDATE customers SET email=? WHERE finbot_id=?", (email, finbot_id))
+
     def list_customers(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM customers ORDER BY name").fetchall()]
