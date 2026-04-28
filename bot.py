@@ -699,6 +699,30 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await update.effective_chat.send_message(
                         "\n".join(lines))
                 return
+            # ── Check for missing emails ──
+            to_issue = [t for t in txns if t["match"] == "matched"]
+            missing_email = []
+            for i, t in enumerate(txns):
+                if t["match"] != "matched":
+                    continue
+                cust = db.get_customer(t["customer_id"]) if t.get("customer_id") else None
+                if not cust or not cust.get("email"):
+                    missing_email.append(i)
+            if missing_email:
+                lines = ["📧 *חסר מייל ללקוחות הבאים:*\n"]
+                kb = []
+                for i in missing_email:
+                    t = txns[i]
+                    lines.append(f"• {esc(t.get('customer_name', t.get('bank_desc', '?')))} — {fmt(t['amount'])}")
+                    kb.append([InlineKeyboardButton(
+                        f"📧 הוסף מייל: {t.get('customer_name', '?')[:20]}",
+                        callback_data=f"addmail_{i}")])
+                kb.append([InlineKeyboardButton("⏭ שלח בלי מייל", callback_data="action_skip_email")])
+                kb.append([InlineKeyboardButton("❌ ביטול", callback_data="action_cancel")])
+                await q.edit_message_text(
+                    "\n".join(lines), parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(kb))
+                return
             try:
                 await _do_issue(update, sess)
             except Exception as e:
@@ -714,6 +738,34 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         clear_session(chat_id)
         await q.edit_message_text("❌ בוטל.")
+        return
+
+    if action == "action_skip_email":
+        await q.answer()
+        sess = get_session(chat_id)
+        try:
+            await _do_issue(update, sess)
+        except Exception as e:
+            log.exception(f"_do_issue failed: {e}")
+            await update.effective_chat.send_message(f"❌ שגיאה בהפקה: {e}")
+            clear_session(chat_id)
+        return
+
+    if action.startswith("addmail_"):
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            txn = txns[idx]
+            sess["phase"] = "add_email"
+            sess["pending_idx"] = idx
+            name = esc(txn.get('customer_name', txn.get('bank_desc', '?')))
+            await q.edit_message_text(
+                f"📧 *הוסף מייל ל: {name}*\n"
+                f"סכום: {fmt(txn['amount'])}\n\n"
+                f"שלח את כתובת המייל:",
+                parse_mode="Markdown")
         return
 
     if action == "action_noop":
@@ -1139,6 +1191,30 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "לדוגמה: `12,345,678901,1234`\n\n"
                 "לדלג על פרטי צ'ק? שלח `דלג`",
                 parse_mode="Markdown")
+        return
+
+    # ── Add email to existing customer ──
+    if sess["phase"] == "add_email":
+        idx = sess["pending_idx"]
+        txn = sess["transactions"][idx]
+        email = text.strip()
+        if "@" in email and "." in email:
+            # Save email to customer in DB
+            if txn.get("customer_id"):
+                db.update_customer_email(txn["customer_id"], email)
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"✅ מייל נשמר: {email}\n\n"
+                f"לחץ *שלח חשבוניות* להמשיך.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
+                ], [
+                    InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+                ]]))
+        else:
+            await update.message.reply_text("⚠️ שלח כתובת מייל תקינה.")
         return
 
     # ── Unknown customer — waiting for email ──
