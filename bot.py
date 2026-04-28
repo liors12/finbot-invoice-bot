@@ -176,8 +176,7 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
         return {"status": 0, "message": "טוקן פינבוט חסר — שלח /token או הוסף FINBOT_TOKEN ל-.env"}
 
     pre_vat = round(amount / VAT_RATE, 2)
-    vat_amount = round(pre_vat * 0.18, 2)
-    payment_sum = pre_vat + vat_amount  # Guaranteed to match items + VAT
+    payment_sum = amount  # Use original amount — rounding: true handles small differences
     lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
     cust = {"name": customer_name, "save": False}
     if customer_email:
@@ -199,7 +198,9 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
             payment.update(check_details)
         body["payments"] = [payment]
 
-    log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, amount={amount}, doc_type={doc_type}, lang={lang}")
+    log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, "
+             f"amount={amount}, pre_vat={pre_vat}, payment_sum={payment_sum}, doc_type={doc_type}")
+    log.info(f"Finbot API body: {body}")
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post(FINBOT_URL, json=body,
                          headers={"Content-Type": "application/json", "secret": finbot_token})
