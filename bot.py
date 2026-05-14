@@ -198,6 +198,12 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
             payment.update(check_details)
         body["payments"] = [payment]
 
+    # Add allocation number request for large invoices with tax ID
+    now_alloc = datetime.now(TZ)
+    threshold = ALLOCATION_THRESHOLD_JUN if now_alloc.month >= 6 and now_alloc.year >= 2026 else ALLOCATION_THRESHOLD
+    if pre_vat >= threshold and customer_tax:
+        body["confirmationNumber"] = True
+
     log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, "
              f"amount={amount}, pre_vat={pre_vat}, payment_sum={payment_sum}, doc_type={doc_type}")
     log.info(f"Finbot API body: {body}")
@@ -723,6 +729,33 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "\n".join(lines), parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup(kb))
                 return
+            # ── Check for missing tax ID (ח.פ.) on large invoices ──
+            now_alloc = datetime.now(TZ)
+            threshold = ALLOCATION_THRESHOLD_JUN if now_alloc.month >= 6 and now_alloc.year >= 2026 else ALLOCATION_THRESHOLD
+            missing_tax = []
+            for i, t in enumerate(txns):
+                if t["match"] != "matched":
+                    continue
+                pre_vat = round(t["amount"] / VAT_RATE, 2)
+                if pre_vat >= threshold:
+                    cust = db.get_customer(t["customer_id"]) if t.get("customer_id") else None
+                    if not cust or not cust.get("tax"):
+                        missing_tax.append(i)
+            if missing_tax:
+                lines = [f"📋 *חסר ח.פ. לחשבוניות מעל {fmt(threshold)}:*\n"]
+                kb = []
+                for i in missing_tax:
+                    t = txns[i]
+                    lines.append(f"• {esc(t.get('customer_name', '?'))} — {fmt(t['amount'])}")
+                    kb.append([InlineKeyboardButton(
+                        f"📋 הוסף ח.פ: {t.get('customer_name', '?')[:20]}",
+                        callback_data=f"addtax_{i}")])
+                kb.append([InlineKeyboardButton("⏭ שלח בלי הקצאה", callback_data="action_skip_tax")])
+                kb.append([InlineKeyboardButton("❌ ביטול", callback_data="action_cancel")])
+                await q.edit_message_text(
+                    "\n".join(lines), parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(kb))
+                return
             try:
                 await _do_issue(update, sess)
             except Exception as e:
@@ -749,6 +782,34 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.exception(f"_do_issue failed: {e}")
             await update.effective_chat.send_message(f"❌ שגיאה בהפקה: {e}")
             clear_session(chat_id)
+        return
+
+    if action == "action_skip_tax":
+        await q.answer()
+        sess = get_session(chat_id)
+        try:
+            await _do_issue(update, sess)
+        except Exception as e:
+            log.exception(f"_do_issue failed: {e}")
+            await update.effective_chat.send_message(f"❌ שגיאה בהפקה: {e}")
+            clear_session(chat_id)
+        return
+
+    if action.startswith("addtax_"):
+        await q.answer()
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            txn = txns[idx]
+            sess["phase"] = "add_tax"
+            sess["pending_idx"] = idx
+            name = esc(txn.get('customer_name', txn.get('bank_desc', '?')))
+            await q.edit_message_text(
+                f"📋 *הוסף ח.פ. ל: {name}*\n"
+                f"סכום: {fmt(txn['amount'])}\n\n"
+                f"שלח את מספר ח.פ./עוסק מורשה:",
+                parse_mode="Markdown")
         return
 
     if action.startswith("addmail_"):
@@ -1191,6 +1252,29 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "לדוגמה: `12,345,678901,1234`\n\n"
                 "לדלג על פרטי צ'ק? שלח `דלג`",
                 parse_mode="Markdown")
+        return
+
+    # ── Add tax ID to existing customer ──
+    if sess["phase"] == "add_tax":
+        idx = sess["pending_idx"]
+        txn = sess["transactions"][idx]
+        tax_id = text.strip()
+        if len(tax_id) >= 5 and tax_id.replace("-", "").isdigit():
+            if txn.get("customer_id"):
+                db.update_customer_tax(txn["customer_id"], tax_id)
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"✅ ח.פ. נשמר: {tax_id}\n\n"
+                f"לחץ *שלח חשבוניות* להמשיך.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
+                ], [
+                    InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+                ]]))
+        else:
+            await update.message.reply_text("⚠️ שלח מספר ח.פ. תקין (לפחות 5 ספרות).")
         return
 
     # ── Add email to existing customer ──
