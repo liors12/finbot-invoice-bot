@@ -320,21 +320,29 @@ def review_text(txns: list[dict]) -> str:
 def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
     """Build inline keyboard for the review flow."""
     rows = []
+    # Only show buttons for actionable transactions (not already issued)
+    actionable = [(i, t) for i, t in enumerate(txns) if t.get("match") != "duplicate"]
+    if not actionable:
+        rows.append([
+            InlineKeyboardButton("✅ שלח חשבוניות", callback_data="action_approve"),
+        ])
+        rows.append([InlineKeyboardButton("❌ ביטול", callback_data="action_cancel")])
+        return InlineKeyboardMarkup(rows)
     # Per-transaction delete buttons — rows of 5
-    del_btns = [InlineKeyboardButton(f"🗑{i+1}", callback_data=f"del_{i}") for i in range(len(txns))]
+    del_btns = [InlineKeyboardButton(f"🗑{i+1}", callback_data=f"del_{i}") for i, _ in actionable]
     for j in range(0, len(del_btns), 5):
         rows.append(del_btns[j:j+5])
     # Per-transaction doc type buttons — show current type, rows of 4
     SHORT_DOC = {"0": "חמ", "1": "קבלה", "2": "חמק"}
     type_btns = [InlineKeyboardButton(
-        f"📄{i+1}:{SHORT_DOC.get(txns[i].get('doc_type','2'),'חמק')}",
-        callback_data=f"dtype_{i}") for i in range(len(txns))]
+        f"📄{i+1}:{SHORT_DOC.get(t.get('doc_type','2'),'חמק')}",
+        callback_data=f"dtype_{i}") for i, t in actionable]
     for j in range(0, len(type_btns), 4):
         rows.append(type_btns[j:j+4])
     # 🆕 buttons for unknown/unresolved customers only
     new_btns = [InlineKeyboardButton(f"🆕{i+1}", callback_data=f"newcust_{i}")
-                for i in range(len(txns))
-                if txns[i].get("match") in ("unknown", "special_ask", "similar")]
+                for i, t in actionable
+                if t.get("match") in ("unknown", "special_ask", "similar")]
     if new_btns:
         for j in range(0, len(new_btns), 5):
             rows.append(new_btns[j:j+5])
