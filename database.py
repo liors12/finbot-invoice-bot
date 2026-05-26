@@ -224,6 +224,15 @@ class Database:
         with self._conn() as conn:
             conn.execute("UPDATE customers SET tax=? WHERE finbot_id=?", (tax, finbot_id))
 
+    def get_customer_check_details(self, finbot_id: int) -> dict | None:
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT check_bank, check_branch, check_account FROM customers WHERE finbot_id=?",
+                (finbot_id,)).fetchone()
+            if r and r[0]:
+                return {"bank": r[0], "branch": r[1], "account": r[2]}
+            return None
+
     def list_customers(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM customers ORDER BY name").fetchall()]
