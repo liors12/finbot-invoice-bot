@@ -933,11 +933,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if txn["match"] == "special_check" and txn.get("customer_id"):
                 sess["phase"] = "check_details"
                 sess["pending_idx"] = idx
-                await q.edit_message_text(
-                    f"📝 *פרטי צ'ק עבור {esc(txn['customer_name'])}:*\n"
-                    f"`בנק,סניף,חשבון,מספר_צק`\n\n"
-                    f"לא חובה — לדלג שלח `דלג`",
-                    parse_mode="Markdown")
+                saved = db.get_customer_check_details(txn["customer_id"])
+                if saved:
+                    await q.edit_message_text(
+                        f"✍️ *מספר הצ'ק עבור {esc(txn['customer_name'])}:*\n"
+                        f"בנק {saved['bank']}, סניף {saved['branch']}, חשבון {saved['account']} — שמורים\n\n"
+                        f"שלח את *מספר הצ'ק* בלבד.\n"
+                        f"לדלג (יוצא כהעברה)? שלח `דלג`",
+                        parse_mode="Markdown")
+                else:
+                    await q.edit_message_text(
+                        f"📝 *פרטי צ'ק עבור {esc(txn['customer_name'])}:*\n"
+                        f"`בנק,סניף,חשבון,מספר_צק`\n\n"
+                        f"לדלג (יוצא כהעברה)? שלח `דלג`",
+                        parse_mode="Markdown")
             elif txn["match"] in ("special_ask", "similar") and txn.get("customer_id"):
                 txn["match"] = "matched"
                 sess["phase"] = "reviewing"
@@ -1222,18 +1231,36 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if sess["phase"] == "check_details":
         idx = sess["pending_idx"]
         txn = sess["transactions"][idx]
+        saved = db.get_customer_check_details(txn.get("customer_id")) if txn.get("customer_id") else None
 
         # Allow skipping
         if text in ("דלג", "חזור", "ביטול"):
             txn["match"] = "matched"
             txn["check_details"] = None
+            txn["payment_type"] = "1"  # Fall back to transfer when no check details
             sess["phase"] = "reviewing"
             sess["pending_idx"] = None
             await update.message.reply_text(
-                f"✅ דילגת על פרטי צ'ק.\n\n" + review_text(sess["transactions"]),
+                f"✅ דילגת על פרטי צ'ק — יוצא כהעברה.\n\n" + review_text(sess["transactions"]),
                 parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
             return
 
+        # If saved bank details exist, accept just the check number
+        if saved and text.strip().isdigit():
+            txn["check_details"] = {
+                "bankName": saved["bank"], "bankBranch": saved["branch"],
+                "bankAccount": saved["account"], "checkNumber": int(text.strip()),
+            }
+            txn["match"] = "matched"
+            sess["phase"] = "reviewing"
+            sess["pending_idx"] = None
+            await update.message.reply_text(
+                f"✅ צ'ק #{text.strip()} נשמר (בנק {saved['bank']}, סניף {saved['branch']}).\n\n" +
+                review_text(sess["transactions"]),
+                parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
+            return
+
+        # Full format: bank,branch,account,checkNumber
         parts = re.split(r'[,\s]+', text)
         if len(parts) >= 4:
             try:
@@ -1255,11 +1282,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ פרטי צ'ק נשמרו.\n\n" + review_text(sess["transactions"]),
                 parse_mode="Markdown", reply_markup=review_keyboard(sess["transactions"]))
         else:
-            await update.message.reply_text(
-                "⚠️ פורמט: `בנק,סניף,חשבון,מספר_צק`\n"
-                "לדוגמה: `12,345,678901,1234`\n\n"
-                "לדלג על פרטי צ'ק? שלח `דלג`",
-                parse_mode="Markdown")
+            if saved:
+                await update.message.reply_text(
+                    f"✍️ שלח את *מספר הצ'ק* בלבד (בנק לאומי {saved['bank']}, סניף {saved['branch']} שמורים).\n\n"
+                    f"לדלג? שלח `דלג`",
+                    parse_mode="Markdown")
+            else:
+                await update.message.reply_text(
+                    "⚠️ פורמט: `בנק,סניף,חשבון,מספר_צק`\n"
+                    "לדוגמה: `10,855,15180051,1234`\n\n"
+                    "לדלג על פרטי צ'ק? שלח `דלג`",
+                    parse_mode="Markdown")
         return
 
     # ── Add tax ID to existing customer ──
