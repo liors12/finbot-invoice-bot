@@ -1248,7 +1248,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if saved and text.strip().isdigit():
             txn["check_details"] = {
                 "bankName": saved["bank"], "bankBranch": saved["branch"],
-                "bankAccount": saved["account"], "checkNumber": int(text.strip()),
+                "bankAccount": saved["account"], "checkNumber": text.strip(),
             }
             txn["match"] = "matched"
             sess["phase"] = "reviewing"
@@ -1265,7 +1265,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 txn["check_details"] = {
                     "bankName": int(parts[0]), "bankBranch": int(parts[1]),
-                    "bankAccount": int(parts[2]), "checkNumber": int(parts[3]),
+                    "bankAccount": int(parts[2]), "checkNumber": parts[3].strip(),
                 }
             except ValueError:
                 await update.message.reply_text(
