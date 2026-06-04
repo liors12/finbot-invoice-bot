@@ -1646,6 +1646,12 @@ async def _do_issue(update: Update, sess: dict):
         else:
             err += 1
             msg = res.get("message", "שגיאה לא ידועה")
+            # Translate Lightning dunning error to clear Hebrew message
+            if "Lightning dunning decision is deny" in msg or "dunning" in msg.lower():
+                if not cust_tax:
+                    msg = f"חסר ח.פ. ללקוח — לא ניתן לבקש מספר הקצאה. הוסף ח.פ. ונסה שוב."
+                else:
+                    msg = f"רשות המיסים דחתה בקשת הקצאה (ח.פ.: {cust_tax}). בדוק חיבור לרשות המיסים בפינבוט."
             lines.append(f"❌ {txn['customer_name']} — {fmt(txn['amount'])}")
             lines.append(f"   {msg}")
         lines.append("")
