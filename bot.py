@@ -179,8 +179,6 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
     payment_sum = amount  # Use original amount — rounding: true handles small differences
     lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
     cust = {"name": customer_name, "save": False}
-    if customer_email:
-        cust["email"] = customer_email
     if customer_tax:
         cust["tax"] = customer_tax
     body = {
