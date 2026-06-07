@@ -203,6 +203,14 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
     # if pre_vat >= threshold and customer_tax:
     #     body["confirmationNumber"] = True
 
+    # Add email object to trigger actual email delivery to customer
+    if customer_email:
+        body["email"] = {
+            "to": customer_email,
+            "subject": f"חשבונית מס קבלה",
+            "body": "מצורפת חשבונית מס קבלה. תודה."
+        }
+
     log.info(f"Finbot API call: customer={customer_name}, email={'yes' if customer_email else 'no'}, "
              f"amount={amount}, pre_vat={pre_vat}, payment_sum={payment_sum}, doc_type={doc_type}")
     log.info(f"Finbot API body: {body}")
