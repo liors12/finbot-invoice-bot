@@ -23,6 +23,7 @@ Commands:
 import os, json, re, base64, logging, hashlib, functools
 from pathlib import Path
 from datetime import datetime, time as dtime
+import calendar
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -1711,6 +1712,35 @@ async def daily_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Reminder failed: {e}")
 
+# ── Monthly income summary (last 2 days of month) ──────────────────────────
+
+async def monthly_summary(ctx: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(TZ)
+    last_day = calendar.monthrange(now.year, now.month)[1]
+    if now.day < last_day - 1:
+        return
+    if not OWNER_CHAT_ID:
+        return
+    try:
+        month_key = now.strftime("%Y-%m")
+        rows = db.get_month_payments(month_key)
+        total = sum(r.get("amount", 0) for r in rows)
+        count = len(rows)
+
+        if count == 0:
+            msg = f"📊 *סיכום הכנסות — {month_key}:*\n\nאין הכנסות החודש."
+        else:
+            lines = [f"📊 *סיכום הכנסות — {month_key}:*\n"]
+            for r in rows:
+                name = r.get("cust_name", r.get("customer_name", "?"))
+                lines.append(f"  • {name} — {fmt(r['amount'])}")
+            lines.append(f"\n*סה\"כ: {fmt(total)} ({count} חשבוניות)*")
+            msg = "\n".join(lines)
+
+        await ctx.bot.send_message(OWNER_CHAT_ID, msg, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Monthly summary failed: {e}")
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1739,7 +1769,12 @@ def main():
             daily_reminder,
             time=dtime(hour=REMINDER_HOUR, minute=0, tzinfo=TZ),
             name="daily_reminder")
+        app.job_queue.run_daily(
+            monthly_summary,
+            time=dtime(hour=8, minute=0, tzinfo=TZ),
+            name="monthly_summary")
         log.info(f"Reminder at {REMINDER_HOUR}:00 for chat {OWNER_CHAT_ID}")
+        log.info(f"Monthly summary at 8:00 (last 2 days of month)")
 
     log.info(f"Bot v2 starting... ({len(GEMINI_KEYS)} Gemini key(s) configured)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
