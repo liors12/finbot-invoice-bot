@@ -1751,7 +1751,7 @@ async def monthly_summary(ctx: ContextTypes.DEFAULT_TYPE):
                 pct = (diff / prev_total) * 100
                 arrow = "📈" if diff >= 0 else "📉"
                 sign = "+" if diff >= 0 else ""
-                lines.append(f"\n{arrow} *לעומת {prev_key}:* {fmt(prev_total)}")
+                lines.append(f"\n{arrow} *לעומת {prev_key}:* {fmt(prev_total)} ({len(prev_rows)} חשבוניות)")
                 lines.append(f"   שינוי: {sign}{fmt(diff)} ({sign}{pct:.0f}%)")
             else:
                 lines.append(f"\n📊 *{prev_key}:* אין נתונים להשוואה")
