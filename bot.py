@@ -1727,6 +1727,15 @@ async def monthly_summary(ctx: ContextTypes.DEFAULT_TYPE):
         total = sum(r.get("amount", 0) for r in rows)
         count = len(rows)
 
+        # Previous month
+        if now.month == 1:
+            prev_year, prev_month = now.year - 1, 12
+        else:
+            prev_year, prev_month = now.year, now.month - 1
+        prev_key = f"{prev_year}-{prev_month:02d}"
+        prev_rows = db.get_month_payments(prev_key)
+        prev_total = sum(r.get("amount", 0) for r in prev_rows)
+
         if count == 0:
             msg = f"📊 *סיכום הכנסות — {month_key}:*\n\nאין הכנסות החודש."
         else:
@@ -1735,6 +1744,18 @@ async def monthly_summary(ctx: ContextTypes.DEFAULT_TYPE):
                 name = r.get("cust_name", r.get("customer_name", "?"))
                 lines.append(f"  • {name} — {fmt(r['amount'])}")
             lines.append(f"\n*סה\"כ: {fmt(total)} ({count} חשבוניות)*")
+
+            # Comparison to previous month
+            if prev_total > 0:
+                diff = total - prev_total
+                pct = (diff / prev_total) * 100
+                arrow = "📈" if diff >= 0 else "📉"
+                sign = "+" if diff >= 0 else ""
+                lines.append(f"\n{arrow} *לעומת {prev_key}:* {fmt(prev_total)}")
+                lines.append(f"   שינוי: {sign}{fmt(diff)} ({sign}{pct:.0f}%)")
+            else:
+                lines.append(f"\n📊 *{prev_key}:* אין נתונים להשוואה")
+
             msg = "\n".join(lines)
 
         await ctx.bot.send_message(OWNER_CHAT_ID, msg, parse_mode="Markdown")
