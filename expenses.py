@@ -293,7 +293,7 @@ def generate_report(
     ws2 = wb.create_sheet("פירוט הוצאות")
     ws2.sheet_properties.sheetView = openpyxl.worksheet.views.SheetView(rightToLeft=True)
 
-    detail_headers = ["תאריך", "שם בית עסק", "קטגוריה", "סכום", "סוג עסקה", "הערות"]
+    detail_headers = ["תאריך", "שם בית עסק", "קטגוריה", "סכום", "מקור", "סוג עסקה", "הערות"]
     for j, h in enumerate(detail_headers, 1):
         cell = ws2.cell(row=1, column=j, value=h)
         cell.font = header_font
@@ -307,23 +307,26 @@ def generate_report(
         c = ws2.cell(row=i, column=4, value=t["amount"])
         c.number_format = money_fmt
         c.font = normal_font
-        ws2.cell(row=i, column=5, value=t["tx_type"]).font = normal_font
-        ws2.cell(row=i, column=6, value=t["notes"]).font = normal_font
-        for j in range(1, 7):
+        source_label = "חשבון בנק" if t.get("source") == "bank" else "אשראי"
+        ws2.cell(row=i, column=5, value=source_label).font = normal_font
+        ws2.cell(row=i, column=6, value=t["tx_type"]).font = normal_font
+        ws2.cell(row=i, column=7, value=t["notes"]).font = normal_font
+        for j in range(1, 8):
             ws2.cell(row=i, column=j).border = border
 
     ws2.column_dimensions["A"].width = 14
     ws2.column_dimensions["B"].width = 30
     ws2.column_dimensions["C"].width = 20
     ws2.column_dimensions["D"].width = 15
-    ws2.column_dimensions["E"].width = 15
-    ws2.column_dimensions["F"].width = 30
+    ws2.column_dimensions["E"].width = 13
+    ws2.column_dimensions["F"].width = 15
+    ws2.column_dimensions["G"].width = 30
 
     # ── Sheet 3: Filtered out expenses ──
     ws_filtered = wb.create_sheet("הוצאות שסוננו")
     ws_filtered.sheet_properties.sheetView = openpyxl.worksheet.views.SheetView(rightToLeft=True)
 
-    filter_headers = ["תאריך עסקה", "תאריך חיוב", "שם בית עסק", "קטגוריה", "סכום", "סיבת סינון"]
+    filter_headers = ["תאריך עסקה", "תאריך חיוב", "שם בית עסק", "קטגוריה", "סכום", "מקור", "סיבת סינון"]
     for j, h in enumerate(filter_headers, 1):
         cell = ws_filtered.cell(row=1, column=j, value=h)
         cell.font = header_font
@@ -339,9 +342,11 @@ def generate_report(
         c = ws_filtered.cell(row=i, column=5, value=t["amount"])
         c.number_format = money_fmt
         c.font = normal_font
+        source_label = "חשבון בנק" if t.get("source") == "bank" else "אשראי"
+        ws_filtered.cell(row=i, column=6, value=source_label).font = normal_font
         charge_month = charge.strftime("%Y-%m") if charge else "?"
-        ws_filtered.cell(row=i, column=6, value=f"חודש {charge_month}").font = normal_font
-        for j in range(1, 7):
+        ws_filtered.cell(row=i, column=7, value=f"חודש {charge_month}").font = normal_font
+        for j in range(1, 8):
             ws_filtered.cell(row=i, column=j).border = border
 
     ws_filtered.column_dimensions["A"].width = 14
@@ -349,7 +354,8 @@ def generate_report(
     ws_filtered.column_dimensions["C"].width = 30
     ws_filtered.column_dimensions["D"].width = 20
     ws_filtered.column_dimensions["E"].width = 15
-    ws_filtered.column_dimensions["F"].width = 15
+    ws_filtered.column_dimensions["F"].width = 13
+    ws_filtered.column_dimensions["G"].width = 15
 
     # ── Sheet 4: Income details ──
     ws3 = wb.create_sheet("פירוט הכנסות")
