@@ -1790,14 +1790,28 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("⚠️ לא נמצאו עסקאות בקובץ.")
             return
 
-        # Store ALL transactions (for filtered-out report)
+        # Store ALL transactions (for filtered-out report), with dedup
         if "expenses_all_txns" not in sess:
             sess["expenses_all_txns"] = []
-        sess["expenses_all_txns"].extend(txns)
+
+        # Dedup: skip transactions already seen (same date + name + amount)
+        existing = set()
+        for t in sess["expenses_all_txns"]:
+            key = (t["date"].strftime("%Y%m%d"), t["name"], t["amount"])
+            existing.add(key)
+
+        new_txns = []
+        for t in txns:
+            key = (t["date"].strftime("%Y%m%d"), t["name"], t["amount"])
+            if key not in existing:
+                new_txns.append(t)
+                existing.add(key)
+
+        sess["expenses_all_txns"].extend(new_txns)
 
         # Filter to target month
         year, month = sess["expenses_month"].split("-")
-        filtered = exp.filter_to_month(txns, int(year), int(month))
+        filtered = exp.filter_to_month(new_txns, int(year), int(month))
 
         sess["expenses_txns"].extend(filtered)
         sess["expenses_files"] += 1
