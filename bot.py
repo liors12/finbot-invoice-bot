@@ -1094,8 +1094,9 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for t in sess.get("expenses_all_txns", []):
             existing.add((t["date"].strftime("%Y%m%d"), t["name"], round(float(t["amount"]), 2)))
 
-        added, skipped_cc, skipped_dup, skipped_month = 0, 0, 0, 0
+        added, skipped_cc, skipped_dup, skipped_month, skipped_savings = 0, 0, 0, 0, 0
         cc_total = 0.0
+        savings_total = 0.0
 
         for r in raw:
             try:
@@ -1121,10 +1122,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 continue
             existing.add(key)
 
+            category = exp.categorize_bank_expense(desc)
+
             txn = {
                 "date": tx_date,
                 "name": desc,
-                "category": exp.categorize_bank_expense(desc),
+                "category": category,
                 "amount": amount,
                 "charge_date": tx_date,
                 "notes": "",
@@ -1135,6 +1138,15 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
             if "expenses_all_txns" not in sess:
                 sess["expenses_all_txns"] = []
+
+            # Savings deposits — internal transfer, not a real expense
+            if category == "חיסכון":
+                txn["exclude_reason"] = "העברה פנימית לחיסכון"
+                sess["expenses_all_txns"].append(txn)
+                skipped_savings += 1
+                savings_total += amount
+                continue
+
             sess["expenses_all_txns"].append(txn)
 
             if tx_date.year == year and tx_date.month == month:
@@ -1150,6 +1162,8 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"נוספו {added} הוצאות בנק לחודש {sess['expenses_month']}")
         if skipped_cc:
             lines.append(f"🚫 דולגו {skipped_cc} חיובי אשראי ({fmt(cc_total)}) — כבר נספרים מהאקסל")
+        if skipped_savings:
+            lines.append(f"🏦 דולגו {skipped_savings} העברות לחיסכון ({fmt(savings_total)}) — העברה פנימית, לא הוצאה")
         if skipped_dup:
             lines.append(f"🔁 דולגו {skipped_dup} כפילויות")
         if skipped_month:
