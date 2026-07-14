@@ -88,19 +88,14 @@ def _parse_date(date_str: str) -> datetime | None:
 def filter_to_month(transactions: list[dict], year: int, month: int) -> list[dict]:
     """
     Filter transactions to a specific calendar month.
-    - Regular transactions: by transaction date
-    - Installments (תשלומים): by charge date (when money actually left)
+    All transactions filtered by charge date (when money actually left the account).
     """
     filtered = []
     for t in transactions:
-        if t["tx_type"] == "תשלומים":
-            # Installments: use charge date
-            if t.get("charge_date") and t["charge_date"].year == year and t["charge_date"].month == month:
-                filtered.append(t)
-        else:
-            # Regular: use transaction date
-            if t["date"].year == year and t["date"].month == month:
-                filtered.append(t)
+        # Use charge date (when money actually left the account)
+        check_date = t.get("charge_date") or t["date"]
+        if check_date.year == year and check_date.month == month:
+            filtered.append(t)
     return filtered
 
 
