@@ -120,6 +120,7 @@ def summarize_by_category(transactions: list[dict]) -> dict:
 def generate_report(
     month_key: str,
     expenses: list[dict],
+    all_expenses: list[dict],
     income_total: float,
     income_count: int,
     income_details: list[dict],
@@ -127,9 +128,10 @@ def generate_report(
 ) -> str:
     """
     Generate an xlsx report with:
-    - Summary: income vs expenses
+    - Summary: income vs expenses + category comparison to previous month
     - Expenses by category
     - Detailed expense list
+    - Filtered out expenses (other months)
     - Income details
     """
     wb = openpyxl.Workbook()
@@ -149,7 +151,21 @@ def generate_report(
     )
 
     year, mon = month_key.split("-")
+    year, mon = int(year), int(mon)
     title = f"דוח הכנסות והוצאות — {month_key}"
+
+    # Calculate previous month data
+    if mon == 1:
+        prev_year, prev_month = year - 1, 12
+    else:
+        prev_year, prev_month = year, mon - 1
+    prev_key = f"{prev_year}-{prev_month:02d}"
+    prev_expenses = filter_to_month(all_expenses, prev_year, prev_month)
+    prev_categories = summarize_by_category(prev_expenses)
+    prev_total = sum(t["amount"] for t in prev_expenses)
+
+    # Current month filtered out expenses
+    filtered_out = [t for t in all_expenses if t not in expenses]
 
     # ── Sheet 1: Summary ──
     ws = wb.active
@@ -161,7 +177,7 @@ def generate_report(
     categories = summarize_by_category(expenses)
 
     # Title
-    ws.merge_cells("A1:D1")
+    ws.merge_cells("A1:F1")
     ws["A1"] = title
     ws["A1"].font = Font(name="Arial", bold=True, size=16)
     ws["A1"].alignment = Alignment(horizontal="center")
@@ -186,11 +202,11 @@ def generate_report(
     ws["B5"].font = Font(name="Arial", bold=True, size=12, color=bal_color)
     ws["B5"].number_format = money_fmt
 
-    # Category breakdown
+    # Category breakdown with previous month comparison
     ws["A7"] = "פירוט הוצאות לפי קטגוריה"
     ws["A7"].font = Font(name="Arial", bold=True, size=13)
 
-    headers = ["קטגוריה", "סכום", "מספר עסקאות", "אחוז מסך ההוצאות"]
+    headers = ["קטגוריה", "סכום", "מספר עסקאות", "אחוז מסך ההוצאות", f"סכום {prev_key}", f"שינוי"]
     for j, h in enumerate(headers, 1):
         cell = ws.cell(row=8, column=j, value=h)
         cell.font = header_font
@@ -207,7 +223,19 @@ def generate_report(
         pct_cell = ws.cell(row=row, column=4, value=data["total"] / expenses_total if expenses_total else 0)
         pct_cell.number_format = pct_fmt
         pct_cell.font = normal_font
-        for j in range(1, 5):
+
+        # Previous month comparison
+        prev_cat_total = prev_categories.get(cat, {}).get("total", 0)
+        c_prev = ws.cell(row=row, column=5, value=prev_cat_total)
+        c_prev.number_format = money_fmt
+        c_prev.font = normal_font
+
+        diff = data["total"] - prev_cat_total
+        c_diff = ws.cell(row=row, column=6, value=diff)
+        c_diff.number_format = money_fmt
+        c_diff.font = Font(name="Arial", size=10, color="CC0000" if diff > 0 else "006600")
+
+        for j in range(1, 7):
             ws.cell(row=row, column=j).border = border
         row += 1
 
@@ -217,12 +245,21 @@ def generate_report(
     c.number_format = money_fmt
     c.font = cat_font
     ws.cell(row=row, column=3, value=len(expenses)).font = cat_font
+    c_prev_total = ws.cell(row=row, column=5, value=prev_total)
+    c_prev_total.number_format = money_fmt
+    c_prev_total.font = cat_font
+    diff_total = expenses_total - prev_total
+    c_diff_total = ws.cell(row=row, column=6, value=diff_total)
+    c_diff_total.number_format = money_fmt
+    c_diff_total.font = cat_font
 
     # Column widths
     ws.column_dimensions["A"].width = 25
     ws.column_dimensions["B"].width = 18
     ws.column_dimensions["C"].width = 15
     ws.column_dimensions["D"].width = 20
+    ws.column_dimensions["E"].width = 18
+    ws.column_dimensions["F"].width = 15
 
     # ── Sheet 2: Expense details ──
     ws2 = wb.create_sheet("פירוט הוצאות")
@@ -235,7 +272,7 @@ def generate_report(
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
 
-    for i, t in enumerate(sorted(expenses, key=lambda x: x["date"]), 2):
+    for i, t in enumerate(sorted(expenses, key=lambda x: x.get("charge_date") or x["date"]), 2):
         ws2.cell(row=i, column=1, value=t["date"].strftime("%d/%m/%Y")).font = normal_font
         ws2.cell(row=i, column=2, value=t["name"]).font = normal_font
         ws2.cell(row=i, column=3, value=t["category"]).font = normal_font
@@ -254,7 +291,39 @@ def generate_report(
     ws2.column_dimensions["E"].width = 15
     ws2.column_dimensions["F"].width = 30
 
-    # ── Sheet 3: Income details ──
+    # ── Sheet 3: Filtered out expenses ──
+    ws_filtered = wb.create_sheet("הוצאות שסוננו")
+    ws_filtered.sheet_properties.sheetView = openpyxl.worksheet.views.SheetView(rightToLeft=True)
+
+    filter_headers = ["תאריך עסקה", "תאריך חיוב", "שם בית עסק", "קטגוריה", "סכום", "סיבת סינון"]
+    for j, h in enumerate(filter_headers, 1):
+        cell = ws_filtered.cell(row=1, column=j, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for i, t in enumerate(sorted(filtered_out, key=lambda x: x.get("charge_date") or x["date"]), 2):
+        ws_filtered.cell(row=i, column=1, value=t["date"].strftime("%d/%m/%Y")).font = normal_font
+        charge = t.get("charge_date")
+        ws_filtered.cell(row=i, column=2, value=charge.strftime("%d/%m/%Y") if charge else "").font = normal_font
+        ws_filtered.cell(row=i, column=3, value=t["name"]).font = normal_font
+        ws_filtered.cell(row=i, column=4, value=t["category"]).font = normal_font
+        c = ws_filtered.cell(row=i, column=5, value=t["amount"])
+        c.number_format = money_fmt
+        c.font = normal_font
+        charge_month = charge.strftime("%Y-%m") if charge else "?"
+        ws_filtered.cell(row=i, column=6, value=f"חודש {charge_month}").font = normal_font
+        for j in range(1, 7):
+            ws_filtered.cell(row=i, column=j).border = border
+
+    ws_filtered.column_dimensions["A"].width = 14
+    ws_filtered.column_dimensions["B"].width = 14
+    ws_filtered.column_dimensions["C"].width = 30
+    ws_filtered.column_dimensions["D"].width = 20
+    ws_filtered.column_dimensions["E"].width = 15
+    ws_filtered.column_dimensions["F"].width = 15
+
+    # ── Sheet 4: Income details ──
     ws3 = wb.create_sheet("פירוט הכנסות")
     ws3.sheet_properties.sheetView = openpyxl.worksheet.views.SheetView(rightToLeft=True)
 
