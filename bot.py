@@ -555,8 +555,11 @@ async def cmd_expenses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"📊 *מצב איסוף הוצאות — {month_key}*\n\n"
-        f"שלח לי את 2 קבצי האקסל מפירוט האשראי.\n"
-        f"(ממחזור 10/{target_month:02d} וממחזור שלפניו)\n\n"
+        f"שלח לי:\n"
+        f"1️⃣ 2 קבצי אקסל מפירוט האשראי\n"
+        f"(ממחזור 10/{target_month:02d} וממחזור שלפניו)\n"
+        f"2️⃣ צילומי מסך מהבנק — להוצאות שאינן אשראי\n"
+        f"(הוראות קבע, העברות, עמלות; חיובי אשראי ידולגו אוטומטית)\n\n"
         f"לסיום שלח `סיכום` או לחץ למטה.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -1068,11 +1071,97 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     sess = get_session(chat_id)
 
-    # In expenses mode — photos not accepted, only xlsx files
+    # In expenses mode — process bank screenshots for non-credit-card expenses
     if sess["phase"] == "expenses_collecting":
-        await update.message.reply_text(
-            "📊 אתה במצב איסוף הוצאות.\n"
-            "שלח קובץ אקסל (.xlsx) מפירוט האשראי, לא צילום מסך.",
+        status_msg = await update.message.reply_text("📥 מעבד צילום מסך של הבנק...")
+        try:
+            photo = update.message.photo[-1]
+            file = await ctx.bot.get_file(photo.file_id)
+            img_bytes = bytes(await file.download_as_bytearray())
+            raw = await parse_screenshot(img_bytes)
+        except ValueError as e:
+            await status_msg.edit_text(f"⚠️ {e}")
+            return
+        except Exception as e:
+            log.exception(f"Expense screenshot failed: {e}")
+            await status_msg.edit_text(f"❌ שגיאה בעיבוד הצילום: {e}")
+            return
+
+        year, month = [int(x) for x in sess["expenses_month"].split("-")]
+
+        # Existing dedup keys
+        existing = set()
+        for t in sess.get("expenses_all_txns", []):
+            existing.add((t["date"].strftime("%Y%m%d"), t["name"], round(float(t["amount"]), 2)))
+
+        added, skipped_cc, skipped_dup, skipped_month = 0, 0, 0, 0
+        cc_total = 0.0
+
+        for r in raw:
+            try:
+                amount = float(r.get("amount", 0))
+                desc = str(r.get("description", "")).strip()
+                # Only outgoing (debit) transactions
+                if r.get("is_incoming") or amount >= 0:
+                    continue
+                amount = abs(amount)
+                tx_date = datetime.strptime(str(r.get("date", "")).strip(), "%d/%m/%Y")
+            except (ValueError, TypeError):
+                continue
+
+            # Skip credit card monthly charges (already counted from Excel)
+            if exp.is_credit_card_charge(desc):
+                skipped_cc += 1
+                cc_total += amount
+                continue
+
+            key = (tx_date.strftime("%Y%m%d"), desc, round(amount, 2))
+            if key in existing:
+                skipped_dup += 1
+                continue
+            existing.add(key)
+
+            txn = {
+                "date": tx_date,
+                "name": desc,
+                "category": exp.categorize_bank_expense(desc),
+                "amount": amount,
+                "charge_date": tx_date,
+                "notes": "",
+                "tx_type": "בנק",
+                "is_foreign": False,
+                "source": "bank",
+            }
+
+            if "expenses_all_txns" not in sess:
+                sess["expenses_all_txns"] = []
+            sess["expenses_all_txns"].append(txn)
+
+            if tx_date.year == year and tx_date.month == month:
+                sess["expenses_txns"].append(txn)
+                added += 1
+            else:
+                skipped_month += 1
+
+        total = sum(t["amount"] for t in sess["expenses_txns"])
+        categories = exp.summarize_by_category(sess["expenses_txns"])
+
+        lines = [f"✅ *צילום עובד!*\n"]
+        lines.append(f"נוספו {added} הוצאות בנק לחודש {sess['expenses_month']}")
+        if skipped_cc:
+            lines.append(f"🚫 דולגו {skipped_cc} חיובי אשראי ({fmt(cc_total)}) — כבר נספרים מהאקסל")
+        if skipped_dup:
+            lines.append(f"🔁 דולגו {skipped_dup} כפילויות")
+        if skipped_month:
+            lines.append(f"📅 דולגו {skipped_month} מחודשים אחרים")
+        lines.append(f"\n*סה\"כ הוצאות עד כה: {fmt(total)}*\n")
+        lines.append("*לפי קטגוריה:*")
+        for cat, data in categories.items():
+            lines.append(f"  • {cat}: {fmt(data['total'])} ({data['count']})")
+        lines.append(f"\nשלח צילום/קובץ נוסף, או לחץ *סיכום דוח*.")
+
+        await status_msg.edit_text(
+            "\n".join(lines), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📊 סיכום דוח", callback_data="expenses_report"),
                 InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
