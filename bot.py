@@ -24,6 +24,7 @@ import os, json, re, base64, logging, hashlib, functools
 from pathlib import Path
 from datetime import datetime, time as dtime
 import calendar
+import expenses as exp
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -536,6 +537,33 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ בוטל.")
 
 @owner_only
+async def cmd_expenses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Start expenses collection for the previous month."""
+    now = datetime.now(TZ)
+    if now.month == 1:
+        target_year, target_month = now.year - 1, 12
+    else:
+        target_year, target_month = now.year, now.month - 1
+    month_key = f"{target_year}-{target_month:02d}"
+
+    sess = get_session(update.effective_chat.id)
+    sess["phase"] = "expenses_collecting"
+    sess["expenses_month"] = month_key
+    sess["expenses_txns"] = []
+    sess["expenses_files"] = 0
+
+    await update.message.reply_text(
+        f"📊 *מצב איסוף הוצאות — {month_key}*\n\n"
+        f"שלח לי את 2 קבצי האקסל מפירוט האשראי.\n"
+        f"(ממחזור 10/{target_month:02d} וממחזור שלפניו)\n\n"
+        f"לסיום שלח `סיכום` או לחץ למטה.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 סיכום דוח", callback_data="expenses_report"),
+            InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+        ]]))
+
+@owner_only
 async def cmd_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Set customer to receipt-only mode (already has חשבונית מס)."""
     if not ctx.args:
@@ -807,6 +835,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.exception(f"_do_issue failed: {e}")
             await update.effective_chat.send_message(f"❌ שגיאה בהפקה: {e}")
             clear_session(chat_id)
+        return
+
+    if action == "expenses_report":
+        await q.answer()
+        sess = get_session(chat_id)
+        if sess["phase"] == "expenses_collecting" and sess.get("expenses_txns"):
+            await q.edit_message_text("⏳ מכין דוח...")
+            await generate_expenses_report(update, sess)
+        else:
+            await q.answer("⚠️ אין הוצאות לדוח. שלח קבצי אקסל קודם.", show_alert=True)
         return
 
     if action.startswith("addtax_"):
@@ -1232,6 +1270,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     sess = get_session(chat_id)
     text = update.message.text.strip()
+
+    # ── Expenses mode: "סיכום" triggers report ──
+    if sess["phase"] == "expenses_collecting":
+        if text == "סיכום":
+            if sess.get("expenses_txns"):
+                await update.message.reply_text("⏳ מכין דוח...")
+                await generate_expenses_report(update, sess)
+            else:
+                await update.message.reply_text("⚠️ אין הוצאות. שלח קבצי אקסל קודם.")
+        else:
+            await update.message.reply_text(
+                "📊 מצב איסוף הוצאות.\n"
+                "שלח קובץ אקסל (.xlsx) או הקלד `סיכום` להפקת דוח.",
+                parse_mode="Markdown")
+        return
 
     # ── Check details input ──
     if sess["phase"] == "check_details":
@@ -1696,6 +1749,116 @@ async def _do_issue(update: Update, sess: dict):
 
     clear_session(chat_id)
 
+# ── Document (xlsx) handler for expenses ──────────────────────────────────
+
+@owner_only
+async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle xlsx file uploads for expenses."""
+    chat_id = update.effective_chat.id
+    sess = get_session(chat_id)
+
+    if sess["phase"] != "expenses_collecting":
+        return  # Ignore documents outside expenses mode
+
+    doc = update.message.document
+    if not doc.file_name or not doc.file_name.endswith(".xlsx"):
+        await update.message.reply_text("⚠️ שלח קובץ אקסל (.xlsx) בלבד.")
+        return
+
+    # Download file
+    status_msg = await update.message.reply_text("📥 מעבד את הקובץ...")
+    try:
+        file = await ctx.bot.get_file(doc.file_id)
+        local_path = f"/tmp/expense_{chat_id}_{sess['expenses_files']}.xlsx"
+        await file.download_to_drive(local_path)
+
+        # Parse the credit card Excel
+        txns = exp.parse_credit_card_excel(local_path)
+        if not txns:
+            await status_msg.edit_text("⚠️ לא נמצאו עסקאות בקובץ.")
+            return
+
+        # Filter to target month
+        year, month = sess["expenses_month"].split("-")
+        filtered = exp.filter_to_month(txns, int(year), int(month))
+
+        sess["expenses_txns"].extend(filtered)
+        sess["expenses_files"] += 1
+
+        total = sum(t["amount"] for t in sess["expenses_txns"])
+        categories = exp.summarize_by_category(sess["expenses_txns"])
+
+        lines = [
+            f"✅ *קובץ {sess['expenses_files']} עובד!*\n",
+            f"נמצאו {len(filtered)} עסקאות מתוך {len(txns)} (סוננו לחודש {sess['expenses_month']})\n",
+            f"*סה\"כ הוצאות עד כה: {fmt(total)}*\n",
+            "*לפי קטגוריה:*",
+        ]
+        for cat, data in categories.items():
+            lines.append(f"  • {cat}: {fmt(data['total'])} ({data['count']})")
+
+        lines.append(f"\nשלח קובץ נוסף, או לחץ *סיכום דוח*.")
+
+        await status_msg.edit_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 סיכום דוח", callback_data="expenses_report"),
+                InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+            ]]))
+    except Exception as e:
+        log.exception(f"Expense file processing failed: {e}")
+        await status_msg.edit_text(f"❌ שגיאה בעיבוד הקובץ: {e}")
+
+# ── Expenses report generation ────────────────────────────────────────────
+
+async def generate_expenses_report(update: Update, sess: dict):
+    """Generate and send the income vs expenses report."""
+    chat_id = update.effective_chat.id
+    month_key = sess["expenses_month"]
+    expenses = sess["expenses_txns"]
+
+    if not expenses:
+        await update.effective_chat.send_message("⚠️ אין הוצאות. שלח קבצי אקסל קודם.")
+        return
+
+    # Get income data from DB
+    income_rows = db.get_month_payments(month_key)
+    income_total = sum(r.get("amount", 0) for r in income_rows)
+    income_details = [{"bank_date": r.get("bank_date", ""), "customer_name": r.get("cust_name", r.get("customer_name", "?")), "amount": r.get("amount", 0)} for r in income_rows]
+
+    # Generate report
+    output_path = f"/tmp/report_{month_key}_{chat_id}.xlsx"
+    exp.generate_report(
+        month_key=month_key,
+        expenses=expenses,
+        income_total=income_total,
+        income_count=len(income_rows),
+        income_details=income_details,
+        output_path=output_path,
+    )
+
+    # Send summary in chat
+    expenses_total = sum(t["amount"] for t in expenses)
+    balance = income_total - expenses_total
+    arrow = "📈" if balance >= 0 else "📉"
+
+    lines = [
+        f"📊 *דוח הכנסות והוצאות — {month_key}*\n",
+        f"💰 הכנסות: {fmt(income_total)} ({len(income_rows)} חשבוניות)",
+        f"💸 הוצאות: {fmt(expenses_total)} ({len(expenses)} עסקאות)",
+        f"{arrow} *יתרה: {fmt(balance)}*",
+    ]
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
+
+    # Send xlsx file
+    with open(output_path, "rb") as f:
+        await update.effective_chat.send_document(
+            document=f,
+            filename=f"דוח_הכנסות_הוצאות_{month_key}.xlsx",
+            caption=f"📊 דוח מפורט — {month_key}")
+
+    clear_session(chat_id)
+
 # ── Daily reminder ──────────────────────────────────────────────────────────
 
 async def daily_reminder(ctx: ContextTypes.DEFAULT_TYPE):
@@ -1762,6 +1925,30 @@ async def monthly_summary(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Monthly summary failed: {e}")
 
+# ── Expenses reminder (1st-7th of each month) ──────────────────────────────
+
+async def expenses_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(TZ)
+    if now.day > 7:
+        return
+    if not OWNER_CHAT_ID:
+        return
+    try:
+        if now.month == 1:
+            prev_year, prev_month = now.year - 1, 12
+        else:
+            prev_year, prev_month = now.year, now.month - 1
+        month_key = f"{prev_year}-{prev_month:02d}"
+
+        await ctx.bot.send_message(
+            OWNER_CHAT_ID,
+            f"💸 *תזכורת הוצאות*\n"
+            f"שלח את פירוט ההוצאות של {month_key}.\n"
+            f"השתמש בפקודה /expenses ואז שלח את קבצי האקסל מהאשראי.",
+            parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Expenses reminder failed: {e}")
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1780,6 +1967,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("receipt", cmd_receipt))
     app.add_handler(CommandHandler("invoice", cmd_invoice))
+    app.add_handler(CommandHandler("expenses", cmd_expenses))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -1794,8 +1982,13 @@ def main():
             monthly_summary,
             time=dtime(hour=8, minute=0, tzinfo=TZ),
             name="monthly_summary")
+        app.job_queue.run_daily(
+            expenses_reminder,
+            time=dtime(hour=9, minute=0, tzinfo=TZ),
+            name="expenses_reminder")
         log.info(f"Reminder at {REMINDER_HOUR}:00 for chat {OWNER_CHAT_ID}")
         log.info(f"Monthly summary at 8:00 (last 2 days of month)")
+        log.info(f"Expenses reminder at 9:00 (1st-7th of month)")
 
     log.info(f"Bot v2 starting... ({len(GEMINI_KEYS)} Gemini key(s) configured)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
