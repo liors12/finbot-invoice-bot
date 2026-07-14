@@ -345,7 +345,8 @@ def generate_report(
         source_label = "חשבון בנק" if t.get("source") == "bank" else "אשראי"
         ws_filtered.cell(row=i, column=6, value=source_label).font = normal_font
         charge_month = charge.strftime("%Y-%m") if charge else "?"
-        ws_filtered.cell(row=i, column=7, value=f"חודש {charge_month}").font = normal_font
+        reason = t.get("exclude_reason") or f"חודש {charge_month}"
+        ws_filtered.cell(row=i, column=7, value=reason).font = normal_font
         for j in range(1, 8):
             ws_filtered.cell(row=i, column=j).border = border
 
