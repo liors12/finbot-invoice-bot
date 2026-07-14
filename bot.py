@@ -550,6 +550,7 @@ async def cmd_expenses(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sess["phase"] = "expenses_collecting"
     sess["expenses_month"] = month_key
     sess["expenses_txns"] = []
+    sess["expenses_all_txns"] = []
     sess["expenses_files"] = 0
 
     await update.message.reply_text(
@@ -1789,6 +1790,11 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("⚠️ לא נמצאו עסקאות בקובץ.")
             return
 
+        # Store ALL transactions (for filtered-out report)
+        if "expenses_all_txns" not in sess:
+            sess["expenses_all_txns"] = []
+        sess["expenses_all_txns"].extend(txns)
+
         # Filter to target month
         year, month = sess["expenses_month"].split("-")
         filtered = exp.filter_to_month(txns, int(year), int(month))
@@ -1842,6 +1848,7 @@ async def generate_expenses_report(update: Update, sess: dict):
     exp.generate_report(
         month_key=month_key,
         expenses=expenses,
+        all_expenses=sess.get("expenses_all_txns", expenses),
         income_total=income_total,
         income_count=len(income_rows),
         income_details=income_details,
