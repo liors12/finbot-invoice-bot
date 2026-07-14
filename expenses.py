@@ -13,6 +13,34 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# ── Bank screenshot expenses ───────────────────────────────────────────────
+
+CC_CHARGE_PATTERNS = ("ממקס", "מקס איט", "כרטיס אשראי", "ישראכרט", "לאומי קארד", "isracard", "max it")
+
+def is_credit_card_charge(desc: str) -> bool:
+    """True if this bank debit is a credit card monthly charge (already counted via Excel)."""
+    d = (desc or "").replace('"', '').replace("'", "").lower()
+    return any(p in d for p in CC_CHARGE_PATTERNS)
+
+
+def categorize_bank_expense(desc: str) -> str:
+    """Simple keyword categorization for bank (non-credit-card) debits."""
+    d = desc or ""
+    if any(p in d for p in ('ני"ע', "ניירות ערך", "SPY", 'קניית נ')):
+        return "השקעות וני\"ע"
+    if "חיסכון" in d or "חסכון" in d:
+        return "חיסכון"
+    if "דמי מנוי" in d or "עמל" in d:
+        return "עמלות בנק"
+    if "משכנתא" in d:
+        return "משכנתא"
+    if "הלווא" in d:
+        return "הלוואות"
+    if "העברה" in d or "ביט" in d:
+        return "העברות (בנק)"
+    return "בנק - אחר"
+
+
 # ── Parse credit card Excel ────────────────────────────────────────────────
 
 def parse_credit_card_excel(file_path: str) -> list[dict]:
