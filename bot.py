@@ -1067,6 +1067,17 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     sess = get_session(chat_id)
 
+    # In expenses mode — photos not accepted, only xlsx files
+    if sess["phase"] == "expenses_collecting":
+        await update.message.reply_text(
+            "📊 אתה במצב איסוף הוצאות.\n"
+            "שלח קובץ אקסל (.xlsx) מפירוט האשראי, לא צילום מסך.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 סיכום דוח", callback_data="expenses_report"),
+                InlineKeyboardButton("❌ ביטול", callback_data="action_cancel"),
+            ]]))
+        return
+
     # Only accept photos in idle or collecting phase
     if sess["phase"] not in ("idle", "collecting"):
         kb = [[
