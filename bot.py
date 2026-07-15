@@ -198,10 +198,11 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
             payment.update(check_details)
         body["payments"] = [payment]
 
-    # NOTE: confirmationNumber via API causes Lightning 403 errors.
-    # Allocation numbers should be requested manually in Finbot UI after issuance.
-    # if pre_vat >= threshold and customer_tax:
-    #     body["confirmationNumber"] = True
+    # Request allocation number for invoices >= threshold (with tax ID)
+    now_alloc = datetime.now(TZ)
+    threshold = ALLOCATION_THRESHOLD_JUN if now_alloc.month >= 6 and now_alloc.year >= 2026 else ALLOCATION_THRESHOLD
+    if pre_vat >= threshold and customer_tax:
+        body["confirmationNumber"] = True
 
     # Add email object to trigger actual email delivery to customer
     if customer_email:
