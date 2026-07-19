@@ -181,6 +181,10 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
     payment_sum = amount  # Use original amount — rounding: true handles small differences
     lang = cfg.get("language", "HE").upper()  # Finbot requires uppercase HE/EN
     cust = {"name": customer_name, "save": False}
+    # Real Finbot customer IDs (< 900000) — link the document to the customer card.
+    # Local-only customers (900000+) have no Finbot card, stay name-only.
+    if customer_id and customer_id < 900000:
+        cust["id"] = customer_id
     if customer_tax:
         cust["tax"] = customer_tax
     body = {
