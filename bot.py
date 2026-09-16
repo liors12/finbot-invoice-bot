@@ -1866,7 +1866,7 @@ async def _do_issue(update: Update, sess: dict):
         pending = []
         for i, t in enumerate(txns):
             try:
-                d = dem.find_open(t.get("customer_id"), t.get("customer_name"))
+                d = dem.find_open(t.get("customer_id"), t.get("customer_name"), t.get("date"))
             except Exception as e:
                 log.warning(f"demand lookup failed: {e}")
                 d = None
