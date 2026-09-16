@@ -92,26 +92,43 @@ def add(serial, doc_number, customer_name, finbot_id, amount, doc_date, note=Non
         """, (serial, doc_number, customer_name, finbot_id, amount, doc_date, note))
 
 
-def find_open(finbot_id, customer_name):
-    """הדרישה הפתוחה הישנה ביותר ללקוח. מתאים לפי מזהה, ואם אין — לפי שם."""
+def _iso(ddmmyyyy):
+    """DD/MM/YYYY -> YYYYMMDD למיון והשוואה. מחזיר None אם לא תקין."""
+    if not ddmmyyyy:
+        return None
+    m = re.match(r'(\d{2})/(\d{2})/(\d{4})', str(ddmmyyyy).strip())
+    return f"{m.group(3)}{m.group(2)}{m.group(1)}" if m else None
+
+
+def find_open(finbot_id, customer_name, paid_on=None):
+    """הדרישה הפתוחה הישנה ביותר ללקוח.
+
+    paid_on — תאריך התשלום בבנק (DD/MM/YYYY). אם ניתן, מוחזרות רק דרישות
+    שהונפקו ביום התשלום או לפניו. תשלום לעולם לא סוגר דרישה עתידית.
+    """
     if not _db_path:
         return None
+
+    ORDER = ("ORDER BY substr(doc_date,7,4) || substr(doc_date,4,2) || "
+             "substr(doc_date,1,2) DESC LIMIT 1")
+    cutoff = _iso(paid_on)
+    date_cond = ""
+    extra = ()
+    if cutoff:
+        date_cond = (" AND (substr(doc_date,7,4) || substr(doc_date,4,2) || "
+                     "substr(doc_date,1,2)) <= ?")
+        extra = (cutoff,)
+
     with _conn() as c:
         row = None
         if finbot_id:
-            row = c.execute("""
-                SELECT * FROM payment_demands
-                WHERE status='open' AND finbot_id=?
-                ORDER BY substr(doc_date,7,4) || substr(doc_date,4,2) || substr(doc_date,1,2)
-                LIMIT 1
-            """, (finbot_id,)).fetchone()
+            row = c.execute(
+                f"SELECT * FROM payment_demands WHERE status='open' AND finbot_id=?{date_cond} {ORDER}",
+                (finbot_id,) + extra).fetchone()
         if not row and customer_name:
-            row = c.execute("""
-                SELECT * FROM payment_demands
-                WHERE status='open' AND customer_name=?
-                ORDER BY substr(doc_date,7,4) || substr(doc_date,4,2) || substr(doc_date,1,2)
-                LIMIT 1
-            """, (customer_name,)).fetchone()
+            row = c.execute(
+                f"SELECT * FROM payment_demands WHERE status='open' AND customer_name=?{date_cond} {ORDER}",
+                (customer_name,) + extra).fetchone()
         return dict(row) if row else None
 
 
