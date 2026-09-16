@@ -20,11 +20,12 @@ Commands:
   /unpaid [YYYY-MM], /cancel
 """
 
-import os, json, re, base64, logging, hashlib, functools
+import os, json, re, base64, logging, hashlib, functools, asyncio
 from pathlib import Path
 from datetime import datetime, time as dtime
 import calendar
 import expenses as exp
+import demands as dem
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -97,6 +98,7 @@ log = logging.getLogger(__name__)
 # Ensure data dir exists
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 db = Database(DB_PATH)
+dem.init(DB_PATH)
 
 # ── Gemini Vision ───────────────────────────────────────────────────────────
 
@@ -173,7 +175,8 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
 async def issue_document(finbot_token: str, customer_id: int, customer_name: str,
                          customer_email: str, customer_tax: str,
                          amount: float, date: str, doc_type: str, payment_type: str,
-                         cfg: dict, check_details: dict = None) -> dict:
+                         cfg: dict, check_details: dict = None,
+                         linked_serial: int = None) -> dict:
     if not finbot_token:
         return {"status": 0, "message": "טוקן פינבוט חסר — שלח /token או הוסף FINBOT_TOKEN ל-.env"}
 
@@ -207,6 +210,11 @@ async def issue_document(finbot_token: str, customer_id: int, customer_name: str
     threshold = ALLOCATION_THRESHOLD_JUN if now_alloc.month >= 6 and now_alloc.year >= 2026 else ALLOCATION_THRESHOLD
     if pre_vat >= threshold and customer_tax:
         body["confirmationNumber"] = True
+
+    # Link to an open payment demand — Finbot closes the demand automatically.
+    # linkedDocument takes the demand's INTERNAL SERIAL (מ.ס.), not its doc number.
+    if linked_serial:
+        body["linkedDocument"] = str(linked_serial)
 
     # Add email object to trigger actual email delivery to customer
     if customer_email:
@@ -637,6 +645,30 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     chat_id = update.effective_chat.id
     action = q.data
+
+    # ── Payment-demand link/skip ──
+    if action in ("dem_link", "dem_skip"):
+        await q.answer()
+        sess = get_session(chat_id)
+        queue = sess.get("demand_queue", [])
+        pos = sess.get("demand_pos", 0)
+        if pos >= len(queue):
+            return
+        txn_idx, d = queue[pos]
+        txns = [t for t in sess["transactions"] if t["match"] not in ("duplicate",)]
+        if action == "dem_link" and txn_idx < len(txns):
+            txns[txn_idx]["linked_serial"] = d["serial"]
+            txns[txn_idx]["linked_demand_doc"] = d["doc_number"]
+            await q.edit_message_text(
+                f"🔗 {esc(d['customer_name'])} — יקושר לדרישה {d['doc_number']}",
+                parse_mode="Markdown")
+        else:
+            await q.edit_message_text(
+                f"⏭ {esc(d['customer_name'])} — לא יקושר, הדרישה תישאר פתוחה",
+                parse_mode="Markdown")
+        sess["demand_pos"] = pos + 1
+        await _ask_next_demand(update, sess)
+        return
 
     # ── Action buttons (review flow) ──
     if action == "action_check":
@@ -1761,6 +1793,60 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(review_text(txns), parse_mode="Markdown", reply_markup=review_keyboard(txns))
         return
 
+# ── Payment demand linking ──────────────────────────────────────────────────
+
+async def _ask_next_demand(update: Update, sess: dict):
+    """Ask whether to link the current transaction to its open payment demand."""
+    chat = update.effective_chat
+    queue = sess.get("demand_queue", [])
+    pos = sess.get("demand_pos", 0)
+
+    if pos >= len(queue):
+        sess.pop("demand_queue", None)
+        sess.pop("demand_pos", None)
+        await _do_issue(update, sess)
+        return
+
+    txn_idx, d = queue[pos]
+    txns = [t for t in sess["transactions"] if t["match"] not in ("duplicate",)]
+    if txn_idx >= len(txns):
+        sess["demand_pos"] = pos + 1
+        await _ask_next_demand(update, sess)
+        return
+
+    txn = txns[txn_idx]
+    paid, due = txn["amount"], d["amount"]
+    gap = round(due - paid, 2)
+
+    lines = [
+        "📄 *נמצאה דרישת תשלום פתוחה*",
+        f"{esc(d['customer_name'])} · דרישה {d['doc_number']} ({d['doc_date']})",
+        f"סכום הדרישה: {fmt(due)}",
+    ]
+    if abs(gap) < 0.01:
+        lines.append("התשלום שהתקבל: תואם ✅")
+        buttons = [
+            [InlineKeyboardButton("🔗 קשר וסגור", callback_data="dem_link")],
+            [InlineKeyboardButton("דלג", callback_data="dem_skip")],
+        ]
+    else:
+        lines.append(f"התשלום שהתקבל: {fmt(paid)}")
+        if gap > 0:
+            lines.append(f"⚠️ חסר {fmt(gap)}")
+        else:
+            lines.append(f"⚠️ עודף {fmt(abs(gap))}")
+        buttons = [
+            [InlineKeyboardButton("🔗 קשר בכל זאת — הדרישה תיסגר", callback_data="dem_link")],
+            [InlineKeyboardButton("דלג — הדרישה תישאר פתוחה", callback_data="dem_skip")],
+        ]
+
+    if len(queue) > 1:
+        lines.append(f"\n_({pos + 1} מתוך {len(queue)})_")
+
+    await chat.send_message("\n".join(lines), parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup(buttons))
+
+
 # ── Issue documents ─────────────────────────────────────────────────────────
 
 async def _do_issue(update: Update, sess: dict):
@@ -1774,6 +1860,24 @@ async def _do_issue(update: Update, sess: dict):
         clear_session(chat_id)
         return
 
+    # ── Check for open payment demands before issuing ──
+    if not sess.get("demands_checked"):
+        sess["demands_checked"] = True
+        pending = []
+        for i, t in enumerate(txns):
+            try:
+                d = dem.find_open(t.get("customer_id"), t.get("customer_name"))
+            except Exception as e:
+                log.warning(f"demand lookup failed: {e}")
+                d = None
+            if d:
+                pending.append((i, d))
+        if pending:
+            sess["demand_queue"] = pending
+            sess["demand_pos"] = 0
+            await _ask_next_demand(update, sess)
+            return
+
     sess["phase"] = "issuing"
     status = await chat.send_message(f"⏳ מפיק {len(txns)} מסמכים...")
 
@@ -1781,7 +1885,10 @@ async def _do_issue(update: Update, sess: dict):
     lines = ["📊 *תוצאות:*\n"]
     ok = err = 0
 
-    for txn in txns:
+    for _i, txn in enumerate(txns):
+        # Finbot rate-limits similar documents issued back-to-back
+        if _i:
+            await asyncio.sleep(10)
         # Look up customer email and tax from DB
         cust = db.get_customer(txn["customer_id"]) if txn.get("customer_id") else None
         cust_email = (cust or {}).get("email", "")
@@ -1791,7 +1898,7 @@ async def _do_issue(update: Update, sess: dict):
                 get_finbot_token(), txn["customer_id"], txn["customer_name"],
                 cust_email, cust_tax,
                 txn["amount"], txn["date"], txn["doc_type"], txn["payment_type"],
-                cfg, txn.get("check_details"))
+                cfg, txn.get("check_details"), txn.get("linked_serial"))
         except Exception as e:
             res = {"status": 0, "message": str(e)}
 
@@ -1817,6 +1924,13 @@ async def _do_issue(update: Update, sess: dict):
         if res.get("status") == 1:
             ok += 1
             lines.append(f"✅ {txn['customer_name']} — {fmt(txn['amount'])}")
+            if txn.get("linked_serial"):
+                try:
+                    dem.mark_linked(txn["linked_serial"],
+                                    dem.doc_number_from_message(res.get("message", "")))
+                    lines.append(f"   🔗 דרישה {txn.get('linked_demand_doc','')} נסגרה")
+                except Exception as e:
+                    log.warning(f"mark_linked failed: {e}")
             if doc_link:
                 lines.append(f"   [צפה במסמך]({doc_link})")
             # Check missing email
