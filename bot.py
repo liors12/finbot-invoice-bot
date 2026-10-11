@@ -1860,6 +1860,40 @@ async def _do_issue(update: Update, sess: dict):
         clear_session(chat_id)
         return
 
+    # ── Card processors (Grow/PayMe): invoice the gross amount the customer paid, not the net bank amount ──
+    _keep = []
+    for t in txns:
+        desc = (t.get("bank_desc") or "")
+        if t.get("customer_id") == 107670 and any(k in desc.lower() for k in ["גרואו","grow","פאיימי","פאימי","פיימי","פואיימי","פואימי","payme"]):
+            if not t.get("grow_adjusted"):
+                gross, src = None, ""
+                try:
+                    d = dem.find_open(t.get("customer_id"), t.get("customer_name"), t.get("date"))
+                    if d:
+                        gross, src = d["amount"], f"דרישה פתוחה {d['doc_number']}"
+                    else:
+                        with dem._conn() as c:
+                            r = c.execute("SELECT amount, doc_number FROM payment_demands WHERE finbot_id=107670 "
+                                          "ORDER BY substr(doc_date,7,4)||substr(doc_date,4,2)||substr(doc_date,1,2) DESC LIMIT 1").fetchone()
+                        if r:
+                            gross, src = r["amount"], f"⚠️ אין דרישה פתוחה — לפי הדרישה האחרונה {r['doc_number']}, תבדוק!"
+                except Exception as e:
+                    log.warning(f"gross lookup failed: {e}")
+                if not gross:
+                    t["grow_skip"] = True
+                    await chat.send_message(f"⚠️ תשלום אשראי {fmt(t['amount'])} — לא מצאתי סכום מלא לאלמקייס. לא הופקה חשבונית. הוצא ידנית.")
+                    continue
+                await chat.send_message(f"💳 אשראי: בבנק {fmt(t['amount'])} — החשבונית תצא על {fmt(gross)} ({src})")
+                t["amount"] = gross; t["grow_adjusted"] = True
+            _keep.append(t)
+        else:
+            _keep.append(t)
+    sess["transactions"] = [x for x in sess["transactions"] if not x.get("grow_skip")]
+    txns = _keep
+    if not txns:
+        clear_session(chat_id)
+        return
+
     # ── Check for open payment demands before issuing ──
     if not sess.get("demands_checked"):
         sess["demands_checked"] = True
