@@ -996,7 +996,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             clean = esc(txn.get('clean_name', txn.get('bank_desc', '?')))
             await q.edit_message_text(
                 f"🆕 *לקוח לא מוכר: {clean}*\n"
-                f"סכום: {fmt(txn['amount'])} | תאריך: {txn['date']}\n\n"
+                f"💰 סכום: {fmt(txn['amount'])} | 📅 תאריך: {txn['date']}\n"
+                f"🏦 בבנק: {esc(txn.get('bank_desc', '?'))}\n\n"
                 f"שלח את כתובת המייל של הלקוח.\n"
                 f"הבוט ישמור את הלקוח ויוציא חשבונית.\n\n"
                 f"לדלג (בלי מייל) שלח `דלג`",
@@ -1022,6 +1023,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if saved:
                     await q.edit_message_text(
                         f"✍️ *מספר הצ'ק עבור {esc(txn['customer_name'])}:*\n"
+                        f"💰 סכום: {fmt(txn['amount'])} | 📅 הופקד: {txn['date']}\n"
                         f"בנק {saved['bank']}, סניף {saved['branch']}, חשבון {saved['account']} — שמורים\n\n"
                         f"שלח את *מספר הצ'ק* בלבד.\n"
                         f"לדלג (יוצא כהעברה)? שלח `דלג`",
@@ -1029,6 +1031,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     await q.edit_message_text(
                         f"📝 *פרטי צ'ק עבור {esc(txn['customer_name'])}:*\n"
+                        f"💰 סכום: {fmt(txn['amount'])} | 📅 הופקד: {txn['date']}\n"
                         f"`בנק,סניף,חשבון,מספר_צק`\n\n"
                         f"לדלג (יוצא כהעברה)? שלח `דלג`",
                         parse_mode="Markdown")
