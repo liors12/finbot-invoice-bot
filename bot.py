@@ -352,6 +352,10 @@ def review_keyboard(txns: list[dict]) -> InlineKeyboardMarkup:
     del_btns = [InlineKeyboardButton(f"🗑{i+1}", callback_data=f"del_{i}") for i, _ in actionable]
     for j in range(0, len(del_btns), 5):
         rows.append(del_btns[j:j+5])
+    # Per-transaction "already invoiced manually" buttons — rows of 5
+    man_btns = [InlineKeyboardButton(f"✋{i+1}", callback_data=f"man_{i}") for i, _ in actionable]
+    for j in range(0, len(man_btns), 5):
+        rows.append(man_btns[j:j+5])
     # Per-transaction doc type buttons — show current type, rows of 4
     SHORT_DOC = {"0": "חמ", "1": "קבלה", "2": "חמק"}
     type_btns = [InlineKeyboardButton(
@@ -924,6 +928,38 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "action_noop":
         await q.answer("💡 השתמש בפקודות טקסט לעריכה", show_alert=False)
+        return
+
+    # ── Per-transaction: already invoiced manually in Finbot ──
+    if action.startswith("man_"):
+        await q.answer("✋ סומן: הוצא ידנית")
+        idx = int(action.split("_")[1])
+        sess = get_session(chat_id)
+        txns = sess.get("transactions", [])
+        if 0 <= idx < len(txns):
+            t = txns.pop(idx)
+            try:
+                db.record_transaction(
+                    fingerprint=t["fingerprint"],
+                    screenshot_hash=",".join(sess.get("screenshot_hashes", [])),
+                    bank_date=t["date"], amount=t["amount"],
+                    amount_before_vat=round(t["amount"] / VAT_RATE, 2),
+                    payer_name=t.get("bank_desc", ""),
+                    finbot_id=t.get("customer_id"),
+                    customer_name=t.get("customer_name") or t.get("clean_name") or t.get("bank_desc", ""),
+                    doc_type=t.get("doc_type", "2"),
+                    finbot_doc_link="manual", finbot_status="success")
+            except Exception as e:
+                log.warning(f"manual mark failed: {e}")
+            if not txns:
+                clear_session(chat_id)
+                await q.edit_message_text(f"✋ {esc(t.get('bank_desc',''))} — סומן כהוצא ידנית. אין עוד העברות.")
+            else:
+                await q.edit_message_text(
+                    review_text(txns), parse_mode="Markdown",
+                    reply_markup=review_keyboard(txns))
+        else:
+            await q.answer("⚠️ שורה לא קיימת", show_alert=True)
         return
 
     # ── Per-transaction delete buttons ──
