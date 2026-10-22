@@ -141,7 +141,8 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
                 [image_part, VISION_PROMPT],
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.1,
-                    max_output_tokens=4000,
+                    max_output_tokens=16000,
+                    response_mime_type="application/json",
                 ),
             )
             return response.text
@@ -164,7 +165,12 @@ async def parse_screenshot(img_bytes: bytes) -> list[dict]:
     txt = txt.strip()
     txt = re.sub(r'^```\w*\n?', '', txt)
     txt = re.sub(r'\n?```$', '', txt)
-    parsed = json.loads(txt.strip())
+    try:
+        parsed = json.loads(txt.strip())
+    except json.JSONDecodeError:
+        log.warning(f"Gemini JSON cut/invalid (len={len(txt)}): {txt[-200:]}")
+        raise ValueError("התמונה ארוכה מדי ולא נקראה עד הסוף — אף תנועה ממנה לא נקלטה. "
+                         "שלח כל מסך מהבנק כצילום נפרד (לא קולאז').")
     if isinstance(parsed, dict) and "error" in parsed:
         raise ValueError(parsed["error"])
     return parsed if isinstance(parsed, list) else []
@@ -423,7 +429,7 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"⚙️ *הגדרות*\n\n🔑 טוקן: {tok}\n💱 {cfg.get('currency','ILS')}  🏷 {vat} מע\"מ\n"
         f"🌐 {'עברית' if cfg.get('language','he')=='he' else 'English'}  🔄 עיגול: {'כן' if cfg.get('rounding','true')=='true' else 'לא'}\n\n"
-        f"📋 סף מספר הקצאה: {fmt(ALLOCATION_THRESHOLD)} לפני מע\"מ",
+        f"📋 סף מספר הקצאה: {fmt(ALLOCATION_THRESHOLD_JUN if datetime.now(TZ) >= datetime(2026, 6, 1, tzinfo=TZ) else ALLOCATION_THRESHOLD)} לפני מע\"מ",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 @owner_only
