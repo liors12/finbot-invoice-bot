@@ -1909,7 +1909,8 @@ async def _do_issue(update: Update, sess: dict):
     _keep = []
     for t in txns:
         desc = (t.get("bank_desc") or "")
-        if t.get("customer_id") == 107670 and any(k in desc.lower() for k in ["גרואו","grow","פאיימי","פאימי","פיימי","פואיימי","פואימי","payme"]):
+        # Elmekiesse always pays by card (Grow/PayMe); OCR often garbles the processor name, so match on customer only
+        if t.get("customer_id") == 107670:
             if not t.get("grow_adjusted"):
                 gross, src = None, ""
                 try:
@@ -1963,15 +1964,25 @@ async def _do_issue(update: Update, sess: dict):
     no_email = []
     lines = ["📊 *תוצאות:*\n"]
     ok = err = 0
+    shaam_down = False   # set when Finbot reports the Tax Authority (שע"מ) connection failed
+    _alloc_thr = ALLOCATION_THRESHOLD_JUN if datetime.now(TZ) >= datetime(2026, 6, 1, tzinfo=TZ) else ALLOCATION_THRESHOLD
 
     for _i, txn in enumerate(txns):
-        # Finbot rate-limits similar documents issued back-to-back
-        if _i:
-            await asyncio.sleep(10)
         # Look up customer email and tax from DB
         cust = db.get_customer(txn["customer_id"]) if txn.get("customer_id") else None
         cust_email = (cust or {}).get("email", "")
         cust_tax = (cust or {}).get("tax", "")
+        _needs_alloc = (txn["amount"] / VAT_RATE) >= _alloc_thr and bool(cust_tax)
+        # Tax Authority link is down — don't even try docs that need an allocation number
+        if shaam_down and _needs_alloc:
+            err += 1
+            lines.append(f"⏸ {txn['customer_name']} — {fmt(txn['amount'])}")
+            lines.append("   לא נשלח — אין חיבור לרשות המיסים (צריך מספר הקצאה)")
+            lines.append("")
+            continue
+        # Finbot rate-limits similar documents issued back-to-back
+        if _i:
+            await asyncio.sleep(10)
         try:
             res = await issue_document(
                 get_finbot_token(), txn["customer_id"], txn["customer_name"],
@@ -2018,17 +2029,27 @@ async def _do_issue(update: Update, sess: dict):
         else:
             err += 1
             msg = res.get("message", "שגיאה לא ידועה")
+            _m = str(msg)
+            if any(k in _m for k in ('שע"מ', "שעמ", "שע״מ", "רשות המסים", "רשות המיסים")) or ("dunning" in _m.lower() and cust_tax):
+                shaam_down = True
             # Translate Lightning dunning error to clear Hebrew message
             if "Lightning dunning decision is deny" in msg or "dunning" in msg.lower():
                 if not cust_tax:
                     msg = f"חסר ח.פ. ללקוח — לא ניתן לבקש מספר הקצאה. הוסף ח.פ. ונסה שוב."
                 else:
                     msg = f"רשות המיסים דחתה בקשת הקצאה (ח.פ.: {cust_tax}). בדוק חיבור לרשות המיסים בפינבוט."
+            if shaam_down and _needs_alloc:
+                msg = "אין חיבור לרשות המיסים — לא התקבל מספר הקצאה, החשבונית לא הופקה."
             lines.append(f"❌ {txn['customer_name']} — {fmt(txn['amount'])}")
             lines.append(f"   {msg}")
         lines.append("")
 
     lines.append(f"*סיכום:* {ok} הצליחו, {err} נכשלו")
+    if shaam_down:
+        lines.insert(1, "🔴 *אין חיבור לרשות המיסים!*\n"
+                        "חשבוניות מעל " + fmt(_alloc_thr) + " לפני מע\"מ לא הופקו, כי צריך להן מספר הקצאה.\n"
+                        "מה לעשות: היכנס לפינבוט → התחבר מחדש לרשות המיסים → שלח שוב את אותו צילום.\n"
+                        "החשבוניות שנכשלו לא סומנו כהונפקו, אז הבוט יציע אותן שוב.\n")
 
     # ── Missing email warning ──
     if no_email:
